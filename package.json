@@ -1,0 +1,34 @@
+{
+  "name": "mini-agent",
+  "version": "1.0.0",
+  "description": "最小可用的AI Agent CLI工具，基于Node.js、TypeScript和LangChain",
+  "main": "dist/index.js",
+  "bin": {
+    "mini-agent": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc && node dist/index.js",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "langchain",
+    "cli",
+    "typescript"
+  ],
+  "author": "Claude Code",
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/core": "^1.1.28",
+    "@langchain/openai": "^1.2.10",
+    "commander": "^14.0.3",
+    "dotenv": "^17.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.1",
+    "typescript": "^5.9.3"
+  }
+}
