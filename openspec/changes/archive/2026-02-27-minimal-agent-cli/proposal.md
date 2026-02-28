@@ -13,11 +13,13 @@
 ## Capabilities
 
 ### New Capabilities
+
 - `agent-core`: 核心的agent功能，包括prompt处理、LLM调用和响应生成
 - `model-config`: 模型配置管理，支持自定义baseURL和模型参数设置
 - `cli-interface`: 命令行交互界面，提供用户输入和agent响应的交互能力
 
 ### Modified Capabilities
+
 <!-- 无现有能力需要修改 -->
 
 ## Impact

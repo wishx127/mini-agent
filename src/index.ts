@@ -4,14 +4,17 @@
  * Mini Agent CLI - 主入口文件
  */
 
-import { CLIInterface } from './cli/interface';
+import { CLIInterface } from './cli/interface.js';
 
-async function main(): Promise<void> {
+function main(): void {
   try {
     const cli = new CLIInterface();
-    await cli.start();
+    cli.start();
   } catch (error) {
-    console.error('❌ 程序启动失败:', error instanceof Error ? error.message : error);
+    console.error(
+      '❌ 程序启动失败:',
+      error instanceof Error ? error.message : error
+    );
     process.exit(1);
   }
 }
