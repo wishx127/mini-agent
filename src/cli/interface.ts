@@ -1,7 +1,9 @@
 import * as readline from 'readline';
+
 import { Command } from 'commander';
-import { AgentCore } from '../agent/core';
-import { ModelConfigManager } from '../config/model-config';
+
+import { AgentCore } from '../agent/core.js';
+import { ModelConfigManager } from '../config/model-config.js';
 
 /**
  * CLI交互界面类
@@ -44,7 +46,10 @@ export class CLIInterface {
       console.log(`🌐 Base URL: ${config.baseUrl}`);
       console.log('\n输入您的消息开始对话 (输入 "quit" 或 "exit" 退出):\n');
     } catch (error) {
-      console.error('❌ Agent初始化失败:', error instanceof Error ? error.message : error);
+      console.error(
+        '❌ Agent初始化失败:',
+        error instanceof Error ? error.message : error
+      );
       process.exit(1);
     }
   }
@@ -55,7 +60,7 @@ export class CLIInterface {
   private createReadlineInterface(): void {
     this.rl = readline.createInterface({
       input: process.stdin,
-      output: process.stdout
+      output: process.stdout,
     });
   }
 
@@ -63,8 +68,8 @@ export class CLIInterface {
    * 显示提示符并等待用户输入
    */
   private promptUser(): void {
-    this.rl.question('👤 您: ', async (input) => {
-      await this.handleUserInput(input);
+    this.rl.question('👤 您: ', (input) => {
+      void this.handleUserInput(input);
     });
   }
 
@@ -100,13 +105,14 @@ export class CLIInterface {
 
       // 显示响应
       console.log(`🤖 Agent: ${response}\n`);
-
     } catch (error) {
       // 清除处理状态行
       readline.clearLine(process.stdout, 0);
       readline.cursorTo(process.stdout, 0);
 
-      console.error(`❌ 错误: ${error instanceof Error ? error.message : error}\n`);
+      console.error(
+        `❌ 错误: ${error instanceof Error ? error.message : String(error)}\n`
+      );
     }
 
     // 继续等待下一次输入
@@ -116,7 +122,7 @@ export class CLIInterface {
   /**
    * 启动CLI交互模式
    */
-  async start(configPath?: string): Promise<void> {
+  start(configPath?: string): void {
     // 解析命令行参数
     this.program.parse(process.argv);
     const options = this.program.opts();
@@ -127,7 +133,7 @@ export class CLIInterface {
     }
 
     // 初始化Agent
-    this.initializeAgent(configPath || options.config);
+    this.initializeAgent(configPath ?? (options.config as string | undefined));
 
     // 创建readline接口
     this.createReadlineInterface();

@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
+
 import * as dotenv from 'dotenv';
-import { ModelConfig, DEFAULT_MODEL_CONFIG } from '../types/model-config';
+
+import { ModelConfig, DEFAULT_MODEL_CONFIG } from '../types/model-config.js';
 
 /**
  * 配置管理器类
@@ -20,7 +22,7 @@ export class ModelConfigManager {
     this.config = {
       ...DEFAULT_MODEL_CONFIG,
       ...fileConfig,
-      ...envConfig
+      ...envConfig,
     } as ModelConfig;
 
     this.validateConfig();
@@ -132,7 +134,7 @@ export class ModelConfigManager {
     // 验证URL格式
     try {
       new URL(this.config.baseUrl);
-    } catch (error) {
+    } catch {
       throw new Error(`无效的baseUrl格式: ${this.config.baseUrl}`);
     }
 

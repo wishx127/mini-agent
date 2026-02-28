@@ -29,8 +29,8 @@ export interface ModelConfig {
  * 默认配置值
  */
 export const DEFAULT_MODEL_CONFIG: Partial<ModelConfig> = {
-  baseUrl: "https://api.openai.com/v1",
-  modelName: "gpt-3.5-turbo",
+  baseUrl: 'https://api.openai.com/v1',
+  modelName: 'gpt-3.5-turbo',
   temperature: 0.7,
-  maxTokens: 2048
+  maxTokens: 2048,
 };

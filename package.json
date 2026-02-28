@@ -2,6 +2,7 @@
   "name": "mini-agent",
   "version": "1.0.0",
   "description": "最小可用的AI Agent CLI工具，基于Node.js、TypeScript和LangChain",
+  "type": "module",
   "main": "dist/index.js",
   "bin": {
     "mini-agent": "dist/index.js"
@@ -10,7 +11,12 @@
     "build": "tsc",
     "dev": "tsc && node dist/index.js",
     "start": "node dist/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint \"./**/*.{ts,tsx,js,jsx,mjs,cjs}\"",
+    "lint:fix": "eslint \"./**/*.{ts,tsx,js,jsx,mjs,cjs}\" --fix",
+    "format": "prettier --write \"./**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,less,css}\"",
+    "format:check": "prettier --check \"./**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,less,css}\"",
+    "prepare": "husky"
   },
   "keywords": [
     "ai",
@@ -27,8 +33,35 @@
     "commander": "^14.0.3",
     "dotenv": "^17.3.1"
   },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{less,css}": [
+      "stylelint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
+  },
   "devDependencies": {
+    "@eslint/compat": "^2.0.2",
+    "@eslint/js": "^9.39.3",
     "@types/node": "^25.3.1",
-    "typescript": "^5.9.3"
+    "eslint": "^9.39.3",
+    "eslint-config-google": "^0.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "husky": "^9.1.7",
+    "jiti": "^2.6.1",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.8.1",
+    "stylelint": "^17.4.0",
+    "stylelint-config-standard": "^40.0.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
   }
 }
