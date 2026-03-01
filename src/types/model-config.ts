@@ -23,6 +23,28 @@ export interface ModelConfig {
    * 最大token数量
    */
   maxTokens?: number;
+
+  /**
+   * 工具配置 - 插件化配置
+   */
+  tools?: ToolsConfig;
+}
+
+/**
+ * 工具配置接口 - 支持任意工具
+ *
+ * 默认加载所有工具，可通过 disabled 禁用指定工具
+ */
+export interface ToolsConfig {
+  /**
+   * 禁用的工具列表（默认加载所有工具）
+   */
+  disabled?: string[];
+
+  /**
+   * 各工具的详细配置
+   */
+  configs?: Record<string, Record<string, unknown>>;
 }
 
 /**
