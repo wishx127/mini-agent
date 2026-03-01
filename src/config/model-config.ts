@@ -3,7 +3,7 @@ import * as path from 'path';
 
 import * as dotenv from 'dotenv';
 
-import { ModelConfig, DEFAULT_MODEL_CONFIG } from '../types/model-config.js';
+import { ModelConfig, DEFAULT_MODEL_CONFIG, ToolsConfig } from '../types/model-config.js';
 
 /**
  * 配置管理器类
@@ -60,7 +60,59 @@ export class ModelConfigManager {
       }
     }
 
+    // 加载工具配置 - 插件化
+    config.tools = this.loadToolsConfigFromEnv();
+
     return config;
+  }
+
+  /**
+   * 从环境变量加载工具配置 - 默认加载所有工具
+   *
+   * 使用 DISABLED_TOOLS 环境变量指定禁用的工具列表，逗号分隔
+   * 例如: DISABLED_TOOLS=tavily,chrome
+   * 默认: 加载所有工具
+   */
+  private loadToolsConfigFromEnv(): ToolsConfig | undefined {
+    const disabledStr = process.env.DISABLED_TOOLS;
+
+    // 如果没有禁用列表，返回 undefined（加载所有工具）
+    if (!disabledStr) {
+      // 但仍需要加载各工具的配置
+      const configs: Record<string, Record<string, unknown>> = {};
+
+      // Tavily 工具配置
+      if (process.env.TAVILY_API_KEY) {
+        configs['tavily'] = {
+          enabled: true,
+          apiKey: process.env.TAVILY_API_KEY,
+        };
+      }
+
+      return Object.keys(configs).length > 0 ? { configs } : undefined;
+    }
+
+    // 解析禁用的工具列表
+    const disabled = disabledStr
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    // 构建各工具的配置
+    const configs: Record<string, Record<string, unknown>> = {};
+
+    // Tavily 工具配置
+    if (process.env.TAVILY_API_KEY && !disabled.includes('tavily')) {
+      configs['tavily'] = {
+        enabled: true,
+        apiKey: process.env.TAVILY_API_KEY,
+      };
+    }
+
+    return {
+      disabled: disabled.length > 0 ? disabled : undefined,
+      configs,
+    };
   }
 
   /**
@@ -71,14 +123,14 @@ export class ModelConfigManager {
       const fullPath = path.resolve(process.cwd(), configPath);
 
       if (!fs.existsSync(fullPath)) {
-        console.warn(`.env配置文件不存在: ${fullPath}`);
+        console.warn(`⚠️ [Config] 配置文件不存在: ${fullPath}`);
         return {};
       }
 
       const fileContent = fs.readFileSync(fullPath, 'utf-8');
       return this.parseEnvFile(fileContent);
     } catch (error) {
-      console.error(`读取.env配置文件失败:`, error);
+      console.error('❌ [Config] 读取配置文件失败:', error);
       return {};
     }
   }
@@ -114,6 +166,28 @@ export class ModelConfigManager {
       if (!isNaN(maxTokens)) {
         config.maxTokens = maxTokens;
       }
+    }
+
+    // 解析禁用的工具列表
+    if (envConfig.DISABLED_TOOLS) {
+      const disabled = envConfig.DISABLED_TOOLS.split(',')
+        .map((t: string) => t.trim())
+        .filter((t: string) => t.length > 0);
+
+      const configs: Record<string, Record<string, unknown>> = {};
+
+      // Tavily 工具配置（如果未禁用且有 API Key）
+      if (!disabled.includes('tavily') && envConfig.TAVILY_API_KEY) {
+        configs['tavily'] = {
+          enabled: true,
+          apiKey: envConfig.TAVILY_API_KEY,
+        };
+      }
+
+      config.tools = {
+        disabled: disabled.length > 0 ? disabled : undefined,
+        configs,
+      };
     }
 
     return config;

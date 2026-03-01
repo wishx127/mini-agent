@@ -12,7 +12,7 @@ function main(): void {
     cli.start();
   } catch (error) {
     console.error(
-      '❌ 程序启动失败:',
+      '❌ [System] 程序启动失败:',
       error instanceof Error ? error.message : error
     );
     process.exit(1);

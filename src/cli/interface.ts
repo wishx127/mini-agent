@@ -44,10 +44,10 @@ export class CLIInterface {
       console.log('🤖 Agent初始化成功!');
       console.log(`📡 模型: ${config.modelName}`);
       console.log(`🌐 Base URL: ${config.baseUrl}`);
-      console.log('\n输入您的消息开始对话 (输入 "quit" 或 "exit" 退出):\n');
+      console.log('💬 输入您的消息开始对话 (输入 "quit" 或 "exit" 退出):\n');
     } catch (error) {
       console.error(
-        '❌ Agent初始化失败:',
+        '❌ [Agent] 初始化失败:',
         error instanceof Error ? error.message : error
       );
       process.exit(1);
@@ -111,7 +111,7 @@ export class CLIInterface {
       readline.cursorTo(process.stdout, 0);
 
       console.error(
-        `❌ 错误: ${error instanceof Error ? error.message : String(error)}\n`
+        `❌ [Error] ${error instanceof Error ? error.message : String(error)}\n`
       );
     }
 
@@ -140,7 +140,7 @@ export class CLIInterface {
 
     // 设置关闭处理
     this.rl.on('close', () => {
-      console.log('\n程序已退出');
+      console.log('\n🛑 程序已退出');
       process.exit(0);
     });
 
