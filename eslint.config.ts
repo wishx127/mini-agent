@@ -12,7 +12,13 @@ const googleRules = (
 
 /** 全局忽略目录 */
 const globalIgnores = {
-  ignores: ['dist/**', 'node_modules/**', 'coverage/**', '*.min.js'],
+  ignores: [
+    'dist/**',
+    'node_modules/**',
+    'coverage/**',
+    '*.min.js',
+    'src/**/*.test.ts',
+  ],
 };
 
 /** 基础 JS 推荐规则 */
@@ -29,6 +35,16 @@ const tsConfig = tseslint.config(
       parserOptions: {
         project: true,
         tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
+    // 测试文件不使用项目解析
+    files: ['src/**/*.test.ts'],
+    extends: [...tseslint.configs.recommended],
+    languageOptions: {
+      parserOptions: {
+        project: false,
       },
     },
   },

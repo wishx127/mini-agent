@@ -10,11 +10,14 @@ export interface LangChainToolDefinition {
     description: string;
     parameters: {
       type: 'object';
-      properties: Record<string, {
-        type: string;
-        description: string;
-        enum?: string[];
-      }>;
+      properties: Record<
+        string,
+        {
+          type: string;
+          description: string;
+          enum?: string[];
+        }
+      >;
       required: string[];
     };
   };
@@ -94,7 +97,10 @@ export abstract class BaseTool {
    */
   toLangChainTool(): LangChainToolDefinition {
     const schema = this.paramsSchema;
-    const properties: Record<string, { type: string; description: string; enum?: string[] }> = {};
+    const properties: Record<
+      string,
+      { type: string; description: string; enum?: string[] }
+    > = {};
     const required: string[] = [];
 
     // 从 zod schema 提取参数信息
@@ -135,7 +141,10 @@ export abstract class BaseTool {
     let required = true;
     let current = schema;
 
-    while (current instanceof z.ZodOptional || current instanceof z.ZodDefault) {
+    while (
+      current instanceof z.ZodOptional ||
+      current instanceof z.ZodDefault
+    ) {
       if (current instanceof z.ZodOptional) {
         required = false;
         const def = current._def as unknown as { innerType?: z.ZodTypeAny };
@@ -152,9 +161,11 @@ export abstract class BaseTool {
   /**
    * 将 zod 类型转换为 LangChain 属性
    */
-  private zodTypeToLangChainProperty(
-    schema: z.ZodTypeAny
-  ): { type: string; description: string; enum?: string[] } {
+  private zodTypeToLangChainProperty(schema: z.ZodTypeAny): {
+    type: string;
+    description: string;
+    enum?: string[];
+  } {
     const { schema: unwrapped } = this.unwrapZodType(schema);
     let type = 'string';
     let description = '';
@@ -189,7 +200,7 @@ export abstract class BaseTool {
       return schema.description;
     }
     if ('_def' in schema && 'description' in schema._def) {
-      return schema._def.description as string || '';
+      return (schema._def.description as string) || '';
     }
     return '';
   }
@@ -267,7 +278,10 @@ export class ToolRegistry {
   /**
    * 执行工具
    */
-  async executeTool(name: string, params: Record<string, unknown>): Promise<string> {
+  async executeTool(
+    name: string,
+    params: Record<string, unknown>
+  ): Promise<string> {
     const tool = this.tools.get(name);
 
     if (!tool) {

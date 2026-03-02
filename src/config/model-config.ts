@@ -3,7 +3,11 @@ import * as path from 'path';
 
 import * as dotenv from 'dotenv';
 
-import { ModelConfig, DEFAULT_MODEL_CONFIG, ToolsConfig } from '../types/model-config.js';
+import {
+  ModelConfig,
+  DEFAULT_MODEL_CONFIG,
+  ToolsConfig,
+} from '../types/model-config.js';
 
 /**
  * 配置管理器类
