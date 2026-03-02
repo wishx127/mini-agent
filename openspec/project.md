@@ -29,13 +29,17 @@ Mini Agent 是一个最小可用的 AI Agent，基于Node.js、TypeScript和Lang
 ```
 src/
 ├── agent/           # Agent核心功能模块
-│   └── core.ts      # AgentCore类 - 处理AI对话逻辑
+│   ├── core.ts      # AgentCore类 - 处理AI对话逻辑（门面类）
+│   ├── controller.ts # Controller类 - 编排层控制入口
+│   ├── planner.ts   # Planner类 - 编排层决策模块
+│   └── executor.ts  # Executor类 - 编排层执行模块
 ├── config/          # 配置管理模块
 │   └── model-config.ts  # ModelConfigManager类 - 配置加载和验证
 ├── cli/             # 命令行界面模块
 │   └── interface.ts # CLIInterface类 - 用户交互处理
 ├── types/           # TypeScript类型定义
-│   └── model-config.ts  # ModelConfig接口和默认配置
+│   ├── model-config.ts  # ModelConfig接口和默认配置
+│   └── agent.ts     # 编排层类型定义
 └── index.ts         # 程序入口文件
 ```
 
@@ -43,22 +47,49 @@ src/
 
 #### 1. AgentCore (`src/agent/core.ts`)
 
-**职责**: AI代理的核心逻辑处理
+**职责**: AI代理的核心逻辑处理，作为编排层的门面类
 
 **主要功能**:
 
 - LLM模型初始化和配置
-- 用户提示处理和响应生成
+- 初始化编排层模块 (Controller, Planner, Executor)
+- 用户提示处理和响应生成（委托给 Controller）
 - 错误处理和异常管理
 - 响应格式化
 
 **关键方法**:
 
-- `processPrompt(prompt: string)` - 处理用户输入并返回AI响应
-- `callLLM(prompt: string)` - 调用底层LLM模型
-- `formatResponse(response: string)` - 格式化响应输出
+- `processPrompt(prompt: string)` - 处理用户输入并返回AI响应（委托给 Controller）
+- `getToolRegistry()` - 获取工具注册表
+- `getController()` / `getPlanner()` / `getExecutor()` - 获取编排层模块实例
 
-#### 2. ModelConfigManager (`src/config/model-config.ts`)
+#### 2. 编排层模块
+
+**Controller** (`src/agent/controller.ts`) - 控制层:
+
+- Token 限制检查，防止上下文溢出
+- 超时控制，防止无限等待
+- 迭代次数限制，防止循环调用
+- 兜底策略，异常情况下的优雅降级
+- 指标追踪，记录执行过程
+
+**Planner** (`src/agent/planner.ts`) - 决策层:
+
+- 工具判断，判断是否需要使用工具
+- 工具选择，选择最合适的工具
+- 执行规划，规划工具调用顺序
+- 参数验证，验证工具参数
+- LLM 决策，使用 LLM 进行智能决策
+- 规则兜底，LLM 不可用时的备用方案
+
+**Executor** (`src/agent/executor.ts`) - 执行层:
+
+- 工具执行，执行工具调用
+- 错误处理，异常分类和处理
+- 重试机制，网络错误自动重试（指数退避）
+- 结果格式化，截断过长结果
+
+#### 3. ModelConfigManager (`src/config/model-config.ts`)
 
 **职责**: 配置管理和验证
 
@@ -161,6 +192,16 @@ interface ModelConfig {
 | `MODEL_API_KEY`     | -                           | API密钥（可选）  |
 | `MODEL_TEMPERATURE` | `0.7`                       | 温度参数（0-2）  |
 | `MODEL_MAX_TOKENS`  | `2048`                      | 最大token数量    |
+
+#### 编排层配置
+
+| 环境变量                          | 默认值  | 说明                 |
+| --------------------------------- | ------- | -------------------- |
+| `ORCHESTRATION_MAX_ITERATIONS`    | `3`     | 最大迭代次数         |
+| `ORCHESTRATION_TIMEOUT`           | `30000` | 超时时间（毫秒）     |
+| `ORCHESTRATION_TOKEN_THRESHOLD`   | `0.9`   | Token 预警阈值       |
+| `ORCHESTRATION_TOOL_TIMEOUT`      | `10000` | 工具超时（毫秒）     |
+| `ORCHESTRATION_MAX_RESULT_LENGTH` | `4000`  | 最大结果长度（字符） |
 
 #### 配置验证规则
 
