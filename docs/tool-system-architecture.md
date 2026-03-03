@@ -11,6 +11,9 @@
 - **标准接口**: 统一的 BaseTool 抽象类
 - **配置驱动**: 通过配置文件控制工具行为
 - **LangChain 兼容**: 自动转换工具定义格式
+- **熔断保护**: 防止故障工具持续消耗资源
+- **工具分类**: 支持按业务类型分类管理
+- **双格式支持**: 支持 Zod 和 JSON Schema 两种参数定义格式
 
 ## 2. 模块架构图
 
@@ -108,7 +111,146 @@
 
 ## 3. 核心组件详解
 
-### 3.1 BaseTool - 工具基类
+### 3.1 CircuitBreaker - 熔断器
+
+**源文件**: `src/tools/circuit-breaker.ts`
+
+**职责**: 提供工具调用的熔断保护，防止故障工具持续消耗资源
+
+```
+┌──────────────────────────────────────────────────┐
+│              CircuitBreaker                      │
+├──────────────────────────────────────────────────┤
+│  状态定义 (const 对象 + as const):              │
+│  • CLOSED - 关闭状态，正常执行                   │
+│  • OPEN - 打开状态，拒绝执行                     │
+│  • HALF_OPEN - 半开状态，测试恢复               │
+│                                                  │
+│  配置参数:                                       │
+│  • failureThreshold: 失败阈值 (默认 5)           │
+│  • resetTimeout: 恢复超时 (默认 30s)             │
+│  • halfOpenAttempts: 半开测试次数 (默认 3)       │
+│  • windowSize: 时间窗口 (默认 60s)               │
+│                                                  │
+│  核心方法:                                       │
+│  • execute(fn) - 包装执行函数                    │
+│  • getState() - 获取当前状态                     │
+│  • getStats() - 获取执行统计                     │
+│  • reset() - 重置熔断器                          │
+└──────────────────────────────────────────────────┘
+```
+
+**状态转换流程**:
+
+```
+        失败次数达到阈值
+CLOSED ──────────────────► OPEN
+   ▲                         │
+   │                         │ 超时后
+   │                         ▼
+   │◄─────────────────── HALF_OPEN
+   │    测试成功              │
+   │                          │ 测试失败
+   └──────────────────────────┘
+```
+
+**错误处理**:
+
+```typescript
+// 熔断器打开时抛出 CircuitOpenError
+try {
+  await breaker.execute(async () => {
+    return toolRegistry.executeTool(name, params);
+  });
+} catch (error) {
+  if (error instanceof CircuitOpenError) {
+    // 工具被熔断，返回友好提示
+    return `工具执行被熔断器拦截: ${error.message}`;
+  }
+}
+```
+
+### 3.2 ToolCategoryRegistry - 工具分类注册表
+
+**源文件**: `src/tools/category-registry.ts`
+
+**职责**: 管理工具分类,提供快速分类查询能力
+
+```
+┌──────────────────────────────────────────────────┐
+│         ToolCategoryRegistry                     │
+├──────────────────────────────────────────────────┤
+│  分类类型 (ToolCategories):                      │
+│  • INTERNAL - 内部工具                           │
+│  • EXTERNAL_API - 外部API工具                    │
+│  • FILE_SYSTEM - 文件系统工具                    │
+│  • VECTOR_SEARCH - 向量检索工具                  │
+│  • SANDBOX - 代码执行沙箱                        │
+│  • UNCATEGORIZED - 未分类(默认)                  │
+│                                                  │
+│  分类定义方式:                                   │
+│  • 单分类: 'EXTERNAL_API'                        │
+│  • 多分类: ['INTERNAL', 'EXTERNAL_API']          │
+│  • 配置对象: { category: 'SANDBOX', roles: [] }  │
+│                                                  │
+│  内部状态:                                       │
+│  • categoryIndex: Map<Category, Set<toolName>>   │
+│  • toolCategories: Map<toolName, Category[]>     │
+│                                                  │
+│  核心方法:                                       │
+│  • registerTool(tool) - 注册工具分类             │
+│  • getToolsByCategory(tools, category) - 分类查询│
+│  • getToolNamesByCategory(category) - 获取名称   │
+│  • getAllCategories() - 获取所有分类             │
+│  • rebuildIndex(tools) - 重建索引                │
+│                                                  │
+│  性能优化:                                       │
+│  • 使用 Map 缓存分类索引                         │
+│  • O(1) 时间复杂度的分类查询                     │
+└──────────────────────────────────────────────────┘
+```
+
+**使用示例**:
+
+```typescript
+// 1. 定义带分类的工具
+@registerTool()
+class SearchTool extends BaseTool {
+  readonly name = 'search';
+  readonly description = '搜索工具';
+  readonly paramsSchema = z.object({ query: z.string() });
+  readonly category = 'EXTERNAL_API'; // 单分类
+
+  async execute(params: Record<string, unknown>) {
+    // ...
+  }
+}
+
+// 2. 多分类工具
+class HybridTool extends BaseTool {
+  readonly name = 'hybrid';
+  readonly category = ['INTERNAL', 'EXTERNAL_API']; // 多分类
+  // ...
+}
+
+// 3. 带权限配置的工具
+class AdminTool extends BaseTool {
+  readonly name = 'admin';
+  readonly category = {
+    category: 'SANDBOX',
+    roles: ['admin', 'developer'], // 预留权限控制
+  };
+  // ...
+}
+
+// 4. 按分类查询工具
+const externalTools = registry.getToolsByCategory(
+  registry.getTools(),
+  'EXTERNAL_API'
+);
+```
+
+### 3.3 BaseTool - 工具基类
 
 **源文件**: `src/tools/base.ts`
 
@@ -123,6 +265,12 @@
 │  • description: string - 工具功能描述            │
 │  • paramsSchema: ZodSchema - 参数验证规则        │
 │                                                  │
+│  可选属性:                                │
+│  • category: ToolCategory - 工具分类             │
+│  • timeout: number - 工具级超时(毫秒)            │
+│  • retryConfig: RetryConfig - 重试配置           │
+│  • jsonSchema: JSONSchema - JSON Schema定义      │
+│                                                  │
 │  内部属性:                                       │
 │  • _enabled: boolean - 工具启用状态              │
 │                                                  │
@@ -130,11 +278,15 @@
 │  • execute(params) [抽象] - 执行工具逻辑         │
 │  • run(params) - 参数验证 + 执行                 │
 │  • toLangChainTool() - 转换为LC格式              │
+│  • getToolDefinition() - 获取OpenAI格式          │
+│  • getAnthropicToolDefinition() - Anthropic格式  │
+│  • validateParams(params) - 参数验证             │
 │                                                  │
 │  辅助方法:                                       │
 │  • zodTypeToLangChainProperty() - 类型转换       │
 │  • extractDescription() - 提取参数描述           │
 │  • unwrapZodType() - 解析Zod类型                 │
+│  • zodToJSONSchema() - Zod转JSON Schema          │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -147,7 +299,14 @@ run(params) 调用
 检查 enabled 状态 ──► false ──► 抛出异常
     │ true
     ▼
-Zod Schema 验证参数 ──► 失败 ──► 抛出异常
+参数验证 (JSON Schema 或 Zod)
+    │
+    ├─► JSON Schema ──► validateWithJSONSchema()
+    │   ├─► 验证必需参数
+    │   ├─► 验证类型约束
+    │   └─► 验证枚举值/范围等
+    │
+    └─► Zod Schema ──► paramsSchema.parse()
     │ 成功
     ▼
 调用 execute(params)
@@ -156,11 +315,11 @@ Zod Schema 验证参数 ──► 失败 ──► 抛出异常
 返回结果 (string)
 ```
 
-### 3.2 ToolRegistry - 工具注册中心
+### 3.4 ToolRegistry - 工具注册中心
 
 **源文件**: `src/tools/base.ts`
 
-**职责**: 管理工具实例的生命周期，提供查询和执行接口
+**职责**: 管理工具实例的生命周期,提供查询和执行接口
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -168,6 +327,9 @@ Zod Schema 验证参数 ──► 失败 ──► 抛出异常
 ├──────────────────────────────────────────────────┤
 │  内部状态:                                       │
 │  • tools: Map<string, BaseTool> - 工具映射表     │
+│  • circuitBreakers: Map<string, CircuitBreaker>  │
+│  • categoryRegistry: ToolCategoryRegistry        │
+│  • categoryCache: Map<string, BaseTool[]>        │
 │                                                  │
 │  注册管理:                                       │
 │  • registerTool(tool) - 注册单个工具             │
@@ -179,6 +341,7 @@ Zod Schema 验证参数 ──► 失败 ──► 抛出异常
 │  • getEnabledTools() - 获取启用的工具            │
 │  • getTool(name) - 按名称查询                    │
 │  • getLangChainTools() - 获取LC格式定义          │
+│  • getToolsByCategory(category) - 按分类查询     │
 │                                                  │
 │  状态控制:                                       │
 │  • enableTool(name) - 启用工具                   │
@@ -186,6 +349,15 @@ Zod Schema 验证参数 ──► 失败 ──► 抛出异常
 │                                                  │
 │  执行接口:                                       │
 │  • executeTool(name, params) - 执行指定工具      │
+│                                                  │
+│  熔断器管理:                              │
+│  • getToolBreaker(name) - 获取工具熔断器         │
+│  • resetToolBreaker(name) - 重置熔断器           │
+│  • getAllBreakers() - 获取所有熔断器             │
+│                                                  │
+│  分类管理:                                │
+│  • getCategoryRegistry() - 获取分类注册表        │
+│  • rebuildCategoryCache() - 重建分类缓存         │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -534,6 +706,165 @@ export class MyTool extends BaseTool {
 
     // 返回字符串结果
     return `处理结果: ${result}`;
+  }
+}
+```
+
+### 5.2 使用工具分类
+
+```typescript
+// 定义带分类的工具
+@registerTool()
+class ExternalSearchTool extends BaseTool {
+  readonly name = 'external-search';
+  readonly description = '外部搜索API';
+  readonly paramsSchema = z.object({ query: z.string() });
+
+  // 方式1: 单分类
+  readonly category = 'EXTERNAL_API';
+
+  // 方式2: 多分类
+  // readonly category = ['EXTERNAL_API', 'VECTOR_SEARCH'];
+
+  // 方式3: 带权限配置(预留)
+  // readonly category = {
+  //   category: 'EXTERNAL_API',
+  //   roles: ['admin', 'user']
+  // };
+
+  async execute(params: Record<string, unknown>) {
+    // ...
+  }
+}
+
+// 按分类查询工具
+const registry = new ToolRegistry();
+registry.registerTool(new ExternalSearchTool());
+
+// 获取所有外部API工具
+const externalTools = registry.getToolsByCategory('EXTERNAL_API');
+
+// 获取多个分类的工具
+const searchTools = registry.getToolsByCategory([
+  'EXTERNAL_API',
+  'VECTOR_SEARCH',
+]);
+```
+
+### 5.3 使用熔断器
+
+```typescript
+// 熔断器自动集成到工具执行中
+const registry = new ToolRegistry();
+registry.registerTool(new ExternalSearchTool());
+
+// 获取工具的熔断器
+const breaker = registry.getToolBreaker('external-search');
+
+// 查看熔断器状态
+console.log(breaker.getState()); // 'CLOSED', 'OPEN', 'HALF_OPEN'
+console.log(breaker.getStats());
+// { state: 'CLOSED', failureCount: 0, successCount: 5, totalAttempts: 5 }
+
+// 手动重置熔断器
+registry.resetToolBreaker('external-search');
+
+// 自定义熔断器配置
+const customBreaker = registry.getToolBreaker('external-search', {
+  failureThreshold: 3, // 失败阈值
+  resetTimeout: 60000, // 恢复超时(毫秒)
+  halfOpenAttempts: 5, // 半开状态测试次数
+  windowSize: 120000, // 时间窗口(毫秒)
+});
+```
+
+### 5.4 使用 JSON Schema
+
+```typescript
+// 使用 JSON Schema 定义参数(替代 Zod)
+@registerTool()
+class JSONSchemaTool extends BaseTool {
+  readonly name = 'json-schema-tool';
+  readonly description = '使用 JSON Schema 的工具';
+
+  // 使用 JSON Schema 替代 Zod
+  readonly jsonSchema = {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: '搜索查询',
+        minLength: 1,
+        maxLength: 100,
+      },
+      limit: {
+        type: 'number',
+        description: '结果数量限制',
+        minimum: 1,
+        maximum: 100,
+      },
+      type: {
+        type: 'string',
+        enum: ['web', 'news', 'images'],
+        description: '搜索类型',
+      },
+    },
+    required: ['query'],
+  };
+
+  // Zod schema 仍然需要提供(作为后备)
+  readonly paramsSchema = z.object({
+    query: z.string(),
+    limit: z.number().optional(),
+    type: z.enum(['web', 'news', 'images']).optional(),
+  });
+
+  async execute(params: Record<string, unknown>) {
+    // 参数会先使用 JSON Schema 验证
+    const { query, limit, type } = params as {
+      query: string;
+      limit?: number;
+      type?: string;
+    };
+    // ...
+  }
+}
+
+// 获取不同格式的工具定义
+const tool = new JSONSchemaTool();
+
+// OpenAI 格式
+const openaiDef = tool.getToolDefinition();
+// Anthropic 格式
+const anthropicDef = tool.getAnthropicToolDefinition();
+```
+
+### 5.5 配置工具超时和重试
+
+```typescript
+@registerTool()
+class ResilientTool extends BaseTool {
+  readonly name = 'resilient-tool';
+  readonly description = '具有超时和重试配置的工具';
+  readonly paramsSchema = z.object({ query: z.string() });
+
+  // 工具级超时(覆盖全局配置)
+  readonly timeout = 5000; // 5秒超时
+
+  // 自定义重试配置
+  readonly retryConfig = {
+    maxAttempts: 3,
+    initialDelayMs: 1000,
+    maxDelayMs: 10000,
+    backoffMultiplier: 2,
+  };
+
+  // 分类
+  readonly category = 'EXTERNAL_API';
+
+  async execute(params: Record<string, unknown>) {
+    // 执行时会自动应用超时和重试
+    // ...
   }
 }
 ```

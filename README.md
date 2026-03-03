@@ -11,6 +11,8 @@
 - 💬 交互式命令行对话
 - 📝 环境变量和.env配置文件支持
 - 🔒 TypeScript类型安全
+- 🛡️ 熔断器保护 - 自动熔断故障工具,防止资源浪费
+- 🔌 双格式参数定义 - 同时支持 Zod 和 JSON Schema
 
 ## 快速开始
 
@@ -99,20 +101,84 @@ $ npm run dev
 🤖 Agent: 今天的热搜新闻包括：...
 ```
 
+## 高级功能
+
+### 熔断器保护
+
+工具调用失败时,熔断器会自动保护系统:
+
+```
+[CircuitBreaker] tavily: CLOSED -> OPEN | Stats: success=0, failures=5
+🛡️ [Executor] 熔断器已打开: Circuit breaker is OPEN for tool 'tavily'. Will retry after 30000ms
+
+// 30秒后自动尝试恢复
+[CircuitBreaker] tavily: OPEN -> HALF_OPEN
+[CircuitBreaker] tavily: HALF_OPEN -> CLOSED
+```
+
+### 工具分类
+
+支持5种工具分类,便于管理和查询:
+
+- **INTERNAL**: 内部工具(如计算器、格式转换等)
+- **EXTERNAL_API**: 外部API工具(如搜索、翻译等)
+- **FILE_SYSTEM**: 文件系统工具(如读写文件)
+- **VECTOR_SEARCH**: 向量检索工具(如RAG、语义搜索)
+- **SANDBOX**: 代码执行沙箱(如Python执行器)
+
+```typescript
+// 获取所有外部API工具
+const externalTools = registry.getToolsByCategory('EXTERNAL_API');
+
+// 获取多个分类的工具
+const searchTools = registry.getToolsByCategory([
+  'EXTERNAL_API',
+  'VECTOR_SEARCH',
+]);
+```
+
+### 双格式参数定义
+
+支持 Zod 和 JSON Schema 两种参数定义方式:
+
+```typescript
+// 方式1: Zod (推荐,类型安全)
+readonly paramsSchema = z.object({
+  query: z.string().describe('搜索查询'),
+  limit: z.number().optional()
+});
+
+// 方式2: JSON Schema (兼容性更好)
+readonly jsonSchema = {
+  type: 'object',
+  properties: {
+    query: { type: 'string', description: '搜索查询' },
+    limit: { type: 'number' }
+  },
+  required: ['query']
+};
+```
+
 ## 项目结构
 
 ```
 src/
 ├── agent/           # Agent核心功能
+│   ├── controller.ts    # 控制层
+│   ├── planner.ts       # 决策层
+│   └── executor.ts      # 执行层
 ├── config/          # 配置管理 (含工具配置)
 ├── cli/             # 命令行界面
 ├── types/           # TypeScript类型定义
 └── tools/           # 工具系统 (插件化架构)
-    ├── base.ts      # 工具基础类型定义
-    ├── registry.ts  # 工具注册中心
-    ├── loader.ts    # 工具加载器
-    └── plugins/     # 工具插件
-        └── tavily.ts # Tavily搜索插件
+    ├── base.ts           # 工具基类和注册表
+    ├── registry.ts       # 工具注册中心
+    ├── loader.ts         # 工具加载器
+    ├── circuit-breaker.ts   # 熔断器
+    ├── category-registry.ts # 工具分类注册表
+    └── plugins/         # 工具插件
+        ├── index.ts      # 插件导出
+        └── tavily.ts     # Tavily搜索插件
 ```
 
 ## 编排层架构
