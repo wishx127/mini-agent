@@ -11,7 +11,7 @@ import {
   AgentError,
   ToolCallDetail,
 } from '../types/agent.js';
-import { ToolRegistry } from '../tools/index.js';
+import { ToolRegistry, CircuitOpenError } from '../tools/index.js';
 
 /**
  * Executor - Agent 编排层的执行模块
@@ -115,16 +115,27 @@ export class Executor {
     startTime: number
   ): Promise<ToolExecutionResult> {
     const toolCallId = toolCall.toolCallId || `tool_${Date.now()}`;
+    const tool = this.toolRegistry.getTool(toolCall.toolName);
 
     console.log(`⚡ [Executor] 执行工具: ${toolCall.toolName}`);
     console.log(`   参数: ${JSON.stringify(toolCall.arguments)}`);
 
+    // 获取工具级超时或使用默认超时
+    const timeout = tool?.timeout || this.config.toolTimeout;
+
+    // 获取熔断器
+    const breaker = this.toolRegistry.getToolBreaker(toolCall.toolName);
+    const circuitStateBefore = breaker.getState();
+
     try {
-      // 使用 Promise.race 实现超时控制
-      const result = await Promise.race([
-        this.toolRegistry.executeTool(toolCall.toolName, toolCall.arguments),
-        this.createTimeout(this.config.toolTimeout),
-      ]);
+      // 使用熔断器包装执行
+      const result = await breaker.execute(async () => {
+        // 使用 Promise.race 实现超时控制
+        return Promise.race([
+          this.toolRegistry.executeTool(toolCall.toolName, toolCall.arguments),
+          this.createTimeout(timeout),
+        ]);
+      });
 
       const executionTime = Date.now() - startTime;
       const formattedResult = this.formatResult(result);
@@ -138,9 +149,25 @@ export class Executor {
         toolCallId,
         toolName: toolCall.toolName,
         executionTime,
+        circuitBreakerState: breaker.getState(),
       };
     } catch (error) {
       const executionTime = Date.now() - startTime;
+
+      // 处理熔断器打开错误
+      if (error instanceof CircuitOpenError) {
+        console.error(`🛡️ [Executor] 熔断器已打开: ${error.message}`);
+        return {
+          success: false,
+          result: `工具执行被熔断器拦截: ${error.message}`,
+          toolCallId,
+          toolName: toolCall.toolName,
+          executionTime,
+          lastError: error.message,
+          circuitBreakerState: circuitStateBefore,
+        };
+      }
+
       const errorMessage = error instanceof Error ? error.message : '未知错误';
 
       console.error(`❌ [Executor] 执行失败: ${errorMessage}`);
@@ -152,6 +179,7 @@ export class Executor {
         toolName: toolCall.toolName,
         executionTime,
         lastError: errorMessage,
+        circuitBreakerState: breaker.getState(),
       };
     }
   }

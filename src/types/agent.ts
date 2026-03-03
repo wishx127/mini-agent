@@ -105,6 +105,8 @@ export interface ToolExecutionResult {
   retryCount?: number;
   /** 最后错误信息 */
   lastError?: string;
+  /** 熔断器状态 */
+  circuitBreakerState?: string;
 }
 
 /**
