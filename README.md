@@ -9,6 +9,8 @@
 - 🛠️ 支持工具调用
 - 🔍 内置联网搜索
 - 💬 交互式命令行对话
+- 🧠 跨请求会话记忆 - 基于 `RunnableWithMessageHistory` 的多轮对话上下文保持
+- 📊 Token 管理 - 自动 token 预检与 `trimMessages` 滑动窗口裁剪
 - 📝 环境变量和.env配置文件支持
 - 🔒 TypeScript类型安全
 - 🛡️ 熔断器保护 - 自动熔断故障工具,防止资源浪费
@@ -166,7 +168,13 @@ src/
 ├── agent/           # Agent核心功能
 │   ├── controller.ts    # 控制层
 │   ├── planner.ts       # 决策层
-│   └── executor.ts      # 执行层
+│   ├── executor.ts      # 执行层
+│   └── memory/          # 会话记忆系统
+│       ├── index.ts         # 统一导出
+│       ├── types.ts         # TokenUsage、CostRecord 等类型
+│       ├── session-store.ts # SessionStore（内存会话存储）
+│       ├── token-manager.ts # Token 估算、裁剪与预检
+│       └── cost-tracker.ts  # Token 消耗统计
 ├── config/          # 配置管理 (含工具配置)
 ├── cli/             # 命令行界面
 ├── types/           # TypeScript类型定义
@@ -235,6 +243,26 @@ ORCHESTRATION_MAX_RESULT_LENGTH=4000
 ```
 
 详细配置说明见 [编排层使用指南](docs/orchestration-guide.md)。
+
+## 会话记忆
+
+Mini Agent 支持跨请求的多轮对话记忆。同一进程内，Agent 会自动记住之前的对话内容：
+
+```bash
+👤 您: 我叫张三
+🤖 Agent: 你好，张三！有什么可以帮你的吗？
+
+👤 您: 我叫什么名字？
+🤖 Agent: 你叫张三。
+```
+
+记忆系统基于 LangChain `RunnableWithMessageHistory`，包含以下能力：
+
+- **自动历史管理**：无需手动维护对话数组，历史自动读写
+- **Token 裁剪**：会话超长时自动裁剪旧消息，保留 system 提示词和最新对话
+- **Token 统计**：追踪每次 LLM 调用的 token 消耗
+
+详细设计说明见 [会话记忆系统文档](docs/memory-system.md)。
 
 ## 开发
 

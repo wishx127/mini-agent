@@ -2,6 +2,8 @@ import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import cliSpinners from 'cli-spinners';
 
+import type { CostSummary } from '../agent/memory/types.js';
+
 /**
  * Google风格颜色定义
  */
@@ -112,6 +114,15 @@ export class DisplayManager {
   }
 
   /**
+   * 更新加载动画文字（不重启 spinner）
+   */
+  updateLoading(text: string): void {
+    if (this.spinner) {
+      this.spinner.text = Colors.primary(text);
+    }
+  }
+
+  /**
    * 停止加载动画
    */
   stopLoading(): void {
@@ -119,6 +130,43 @@ export class DisplayManager {
       this.spinner.stop();
       this.spinner = null;
     }
+  }
+
+  /**
+   * 显示 token 使用统计
+   */
+  showTokenStats(
+    last: { inputTokens: number; outputTokens: number; elapsedMs: number },
+    session: CostSummary
+  ): void {
+    const fmt = (n: number | undefined) => (n ?? 0).toLocaleString('en-US');
+    const elapsed = (last.elapsedMs / 1000).toFixed(1);
+
+    const requestTotal = (last.inputTokens ?? 0) + (last.outputTokens ?? 0);
+
+    const perRequest =
+      Colors.dim('↑') +
+      ' ' +
+      Colors.secondary(fmt(last.inputTokens)) +
+      '  ' +
+      Colors.dim('↓') +
+      ' ' +
+      Colors.secondary(fmt(last.outputTokens)) +
+      '  ' +
+      Colors.dim('Cost') +
+      ' ' +
+      Colors.secondary(fmt(requestTotal) + ' tokens') +
+      '  ' +
+      Colors.dim(elapsed + 's');
+
+    const sessionPart =
+      Colors.dim('·  Session ') +
+      Colors.secondary(fmt(session.totalTokens)) +
+      Colors.dim(' tokens') +
+      Colors.dim('  (' + session.requestCount + ' req)');
+
+    console.log('  ' + perRequest + '  ' + sessionPart);
+    console.log();
   }
 
   /**

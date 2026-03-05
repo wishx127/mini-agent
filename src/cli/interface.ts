@@ -155,19 +155,56 @@ export class CLIInterface {
 
     console.log();
 
+    const startTime = Date.now();
+    const loadingMsg = getRandomLoadingMessage();
+    // 记录请求前的会话 token 累计（展示在 spinner 中）
+    const prevSession = this.agent.getSessionTokenSummary();
+
+    // 启动计时器：每 200ms 更新 spinner 文字，展示实时elapsed + 会话 token 总量
+    let timerHandle: ReturnType<typeof setInterval> | null = setInterval(() => {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const sessionTokens = prevSession.totalTokens;
+      const tokenHint =
+        sessionTokens > 0
+          ? `  ·  ${sessionTokens.toLocaleString('en-US')} tokens`
+          : '';
+      this.displayManager.updateLoading(
+        `${loadingMsg}${tokenHint}  (${elapsed}s)`
+      );
+    }, 100);
+
+    const clearTimer = () => {
+      if (timerHandle !== null) {
+        clearInterval(timerHandle);
+        timerHandle = null;
+      }
+    };
+
     try {
       // 显示加载动画
-      this.displayManager.startLoading(getRandomLoadingMessage());
+      this.displayManager.startLoading(loadingMsg);
 
       // 调用Agent处理
       const response = await this.agent.processPrompt(trimmedInput);
+      const elapsedMs = Date.now() - startTime;
 
+      clearTimer();
       // 停止加载动画
       this.displayManager.stopLoading();
 
       // 显示响应
       this.displayManager.showAgentResponse(response);
+
+      // 显示 token 统计
+      const lastUsage = this.agent.getLastTokenUsage();
+      if (lastUsage) {
+        this.displayManager.showTokenStats(
+          { ...lastUsage, elapsedMs },
+          this.agent.getSessionTokenSummary()
+        );
+      }
     } catch (error) {
+      clearTimer();
       // 停止加载动画
       this.displayManager.stopLoading();
 
