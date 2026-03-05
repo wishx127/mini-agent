@@ -1,9 +1,51 @@
 import * as readline from 'readline';
+import { createRequire } from 'module';
 
+import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { AgentCore } from '../agent/core.js';
 import { ModelConfigManager } from '../config/model-config.js';
+
+import { DisplayManager } from './display-manager.js';
+
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json') as { version: string };
+const VERSION = packageJson.version;
+
+const Colors = {
+  primary: chalk.hex('#1a73e8'),
+  secondary: chalk.hex('#5f6368'),
+  success: chalk.hex('#34a853'),
+} as const;
+
+/**
+ * 加载动画文案 - 随机选择
+ */
+const LOADING_MESSAGES = [
+  'Thinking',
+  'Processing',
+  'Analyzing',
+  'Computing',
+  'Generating',
+  'Reasoning',
+  'Working',
+  'Pondering',
+  'Brainstorming',
+  'Contemplating',
+  'Calculating',
+  'Evaluating',
+  'Formulating',
+  'Deciphering',
+  'Exploring',
+] as const;
+
+/**
+ * 随机获取加载文案
+ */
+function getRandomLoadingMessage(): string {
+  return LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
+}
 
 /**
  * CLI交互界面类
@@ -12,9 +54,11 @@ export class CLIInterface {
   private agent!: AgentCore;
   private rl!: readline.Interface;
   private program: Command;
+  private displayManager: DisplayManager;
 
   constructor() {
     this.program = new Command();
+    this.displayManager = new DisplayManager();
     this.setupCommands();
   }
 
@@ -25,7 +69,7 @@ export class CLIInterface {
     this.program
       .name('mini-agent')
       .description('一个最小可用的AI Agent CLI工具')
-      .version('1.0.0');
+      .version(VERSION);
 
     this.program
       .option('-c, --config <path>', '.env配置文件路径')
@@ -41,13 +85,23 @@ export class CLIInterface {
       const config = configManager.getConfig();
       this.agent = new AgentCore(config);
 
-      console.log('🤖 Agent初始化成功!');
-      console.log(`📡 模型: ${config.modelName}`);
-      console.log(`🌐 Base URL: ${config.baseUrl}`);
-      console.log('💬 输入您的消息开始对话 (输入 "quit" 或 "exit" 退出):\n');
+      console.log();
+      console.log(
+        Colors.primary('mini-agent ') + Colors.secondary(`v${VERSION}`)
+      );
+      console.log(Colors.secondary('─'.repeat(40)));
+      console.log(Colors.secondary('Model: ') + config.modelName);
+      console.log(Colors.secondary('Endpoint: ') + config.baseUrl);
+      console.log();
+      console.log(
+        Colors.secondary(
+          'Type your message. Press Ctrl+C or enter "quit" to exit.'
+        )
+      );
+      console.log();
     } catch (error) {
       console.error(
-        '❌ [Agent] 初始化失败:',
+        Colors.primary('[Error] '),
         error instanceof Error ? error.message : error
       );
       process.exit(1);
@@ -68,8 +122,15 @@ export class CLIInterface {
    * 显示提示符并等待用户输入
    */
   private promptUser(): void {
-    this.rl.question('👤 您: ', (input) => {
-      void this.handleUserInput(input);
+    this.rl.question(Colors.primary('> '), (input) => {
+      void this.handleUserInput(input).catch((error) => {
+        console.error(
+          Colors.primary('[Error] '),
+          error instanceof Error ? error.message : error
+        );
+        // 即使出错也要继续提示用户
+        this.promptUser();
+      });
     });
   }
 
@@ -80,8 +141,8 @@ export class CLIInterface {
     const trimmedInput = input.trim();
 
     // 检查退出命令
-    if (['quit', 'exit', 'q'].includes(trimmedInput.toLowerCase())) {
-      console.log('👋 再见！');
+    if (['quit', 'exit'].includes(trimmedInput.toLowerCase())) {
+      console.log(Colors.secondary('Goodbye.'));
       this.rl.close();
       return;
     }
@@ -92,31 +153,32 @@ export class CLIInterface {
       return;
     }
 
+    console.log();
+
     try {
-      // 显示处理状态
-      process.stdout.write('🤖 Agent: 思考中');
+      // 显示加载动画
+      this.displayManager.startLoading(getRandomLoadingMessage());
 
       // 调用Agent处理
       const response = await this.agent.processPrompt(trimmedInput);
 
-      // 清除处理状态行
-      readline.clearLine(process.stdout, 0);
-      readline.cursorTo(process.stdout, 0);
+      // 停止加载动画
+      this.displayManager.stopLoading();
 
       // 显示响应
-      console.log(`🤖 Agent: ${response}\n`);
+      this.displayManager.showAgentResponse(response);
     } catch (error) {
-      // 清除处理状态行
-      readline.clearLine(process.stdout, 0);
-      readline.cursorTo(process.stdout, 0);
+      // 停止加载动画
+      this.displayManager.stopLoading();
 
-      console.error(
-        `❌ [Error] ${error instanceof Error ? error.message : String(error)}\n`
+      // 显示错误
+      this.displayManager.showError(
+        error instanceof Error ? error.message : String(error)
       );
+    } finally {
+      // 无论如何都要继续等待下一次输入
+      this.promptUser();
     }
-
-    // 继续等待下一次输入
-    this.promptUser();
   }
 
   /**
@@ -129,7 +191,6 @@ export class CLIInterface {
 
     if (options.help) {
       this.program.help();
-      return;
     }
 
     // 初始化Agent
@@ -140,7 +201,7 @@ export class CLIInterface {
 
     // 设置关闭处理
     this.rl.on('close', () => {
-      console.log('\n🛑 程序已退出');
+      console.log();
       process.exit(0);
     });
 
