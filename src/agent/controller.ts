@@ -1,10 +1,16 @@
 import { ChatOpenAI } from '@langchain/openai';
+import { HumanMessage } from '@langchain/core/messages';
+import type { AIMessage, BaseMessage } from '@langchain/core/messages';
 import {
-  HumanMessage,
-  SystemMessage,
-  AIMessage,
-  ToolMessage,
-} from '@langchain/core/messages';
+  Runnable,
+  RunnableLambda,
+  RunnableWithMessageHistory,
+} from '@langchain/core/runnables';
+import type { ChatPromptValueInterface } from '@langchain/core/prompt_values';
+import {
+  ChatPromptTemplate,
+  MessagesPlaceholder,
+} from '@langchain/core/prompts';
 
 import {
   ControlConfig,
@@ -13,9 +19,7 @@ import {
   ExecutionState,
   ExecutionStatus,
   FallbackResult,
-  TokenStatus,
   ToolExecutionResult,
-  ConversationMessage,
   PlanningContext,
   ToolInfo,
 } from '../types/agent.js';
@@ -23,20 +27,19 @@ import { ToolRegistry } from '../tools/index.js';
 
 import { Planner } from './planner.js';
 import { Executor } from './executor.js';
-
-/**
- * 估算文本 Token 数量
- * 使用简单的估算方法：平均每 4 个字符约等于 1 个 token
- */
-function estimateTokenCount(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+import {
+  SessionStore,
+  CostTracker,
+  createTrimmer,
+  runTokenPreflight,
+} from './memory/index.js';
 
 /**
  * Controller - Agent 编排层的控制模块
  *
  * 职责：
- * - Token 上限控制
+ * - 跨请求会话记忆（通过 RunnableWithMessageHistory）
+ * - Token 上限控制（预检 + 链内裁剪）
  * - 超时管理
  * - 调用次数限制
  * - 失败兜底策略
@@ -50,6 +53,10 @@ export class Controller {
   private executor: Executor;
   private llm: ChatOpenAI;
   private toolRegistry: ToolRegistry;
+  private sessionStore: SessionStore;
+  private costTracker: CostTracker;
+  private readonly sessionId: string = 'default';
+  private chainWithHistory: Runnable<{ input: string }, AIMessage>;
 
   constructor(
     llm: ChatOpenAI,
@@ -64,6 +71,41 @@ export class Controller {
     this.metrics = this.initMetrics();
     // 初始化 startTime，避免 checkTimeout() 在 execute() 前调用时返回错误结果
     this.metrics.startTime = Date.now();
+    // 初始化记忆组件
+    this.sessionStore = new SessionStore();
+    this.costTracker = new CostTracker();
+
+    // 构建 prompt 模板：system + history 占位符 + human
+    const prompt = ChatPromptTemplate.fromMessages([
+      ['system', '你是一个智能助手，使用工具来回答需要实时信息的问题。'],
+      new MessagesPlaceholder('history'),
+      ['human', '{input}'],
+    ]);
+
+    // 创建 token 裁剪器
+    const trimmer = createTrimmer({ maxTokens: this.config.maxTokens });
+
+    // 构建 Runnable 链：prompt → extractMessages → trimmer → llm.bindTools(tools)
+    // ChatPromptTemplate 输出 ChatPromptValue，而 trimmer 接受 BaseMessage[]，
+    // 需要用 RunnableLambda 做一次类型转换。
+    const extractMessages = RunnableLambda.from(
+      (v: ChatPromptValueInterface): BaseMessage[] => v.toChatMessages()
+    );
+    const tools = toolRegistry.getLangChainTools();
+    const chain = prompt
+      .pipe(extractMessages)
+      .pipe(trimmer)
+      .pipe(this.llm.bindTools(tools));
+
+    // 用 RunnableWithMessageHistory 包装链，自动管理跨请求历史
+    // chain 的完整输入类型包含 history，由 RunnableWithMessageHistory 内部注入，
+    // 对外暴露的接口只需要 { input: string }，此处做一次有意的类型断言。
+    this.chainWithHistory = new RunnableWithMessageHistory({
+      runnable: chain as unknown as Runnable<{ input: string }, AIMessage>,
+      getMessageHistory: (id: string) => this.sessionStore.getOrCreate(id),
+      inputMessagesKey: 'input',
+      historyMessagesKey: 'history',
+    }) as unknown as Runnable<{ input: string }, AIMessage>;
   }
 
   /**
@@ -124,14 +166,36 @@ export class Controller {
     this.metrics = this.initMetrics();
     this.metrics.startTime = Date.now();
 
-    const conversationHistory: ConversationMessage[] = [];
-    conversationHistory.push({ role: 'user', content: prompt });
-
     try {
+      // Token 预检：加载当前历史 + 新 prompt，超限时裁剪历史
+      const historyStore = this.sessionStore.getOrCreate(this.sessionId);
+      const historyMessages = await historyStore.getMessages();
+      const allMessages: BaseMessage[] = [
+        ...historyMessages,
+        new HumanMessage(prompt),
+      ];
+      const trimmedMessages = await runTokenPreflight(
+        allMessages,
+        this.config.maxTokens
+      );
+
+      // 若发生裁剪，将裁剪后的历史写回 SessionStore
+      if (trimmedMessages.length < allMessages.length) {
+        await this.sessionStore.clear(this.sessionId);
+        // 最后一条是当前 HumanMessage，不写回（由 chainWithHistory 自动管理）
+        const trimmedHistory = trimmedMessages.slice(
+          0,
+          trimmedMessages.length - 1
+        );
+        for (const msg of trimmedHistory) {
+          await historyStore.addMessage(msg);
+        }
+      }
+
       // 检查是否有可用工具
       const enabledTools = this.toolRegistry.getEnabledTools();
       if (enabledTools.length === 0) {
-        return this.directLLMResponse(prompt, conversationHistory);
+        return await this.llmResponseWithHistory(prompt);
       }
 
       // 工具调用循环
@@ -142,16 +206,7 @@ export class Controller {
       ) {
         // 检查超时
         if (this.checkTimeout()) {
-          return this.fallback(
-            'timeout',
-            this.buildPartialResult(conversationHistory)
-          );
-        }
-
-        // 检查 Token 限制
-        const tokenStatus = this.checkTokenLimit(conversationHistory);
-        if (tokenStatus.exceeded) {
-          return this.fallback('token_exceeded');
+          return this.fallback('timeout');
         }
 
         this.metrics.iterationCount = iteration + 1;
@@ -159,15 +214,15 @@ export class Controller {
         // 规划阶段
         const planningContext: PlanningContext = {
           prompt,
-          conversationHistory,
+          conversationHistory: [],
           availableTools: this.getAvailableToolsInfo(enabledTools),
         };
 
         const plan = await this.planner.plan(planningContext);
 
-        // 如果不需要工具，直接获取 LLM 响应
+        // 如果不需要工具，直接获取 LLM 响应（历史由 chainWithHistory 自动管理）
         if (!plan.needsTool || plan.toolCalls.length === 0) {
-          return this.directLLMResponse(prompt, conversationHistory);
+          return await this.llmResponseWithHistory(prompt);
         }
 
         // 执行阶段
@@ -180,22 +235,18 @@ export class Controller {
         // 处理执行结果
         const allFailed = results.every((r) => !r.success);
         if (allFailed) {
-          // 所有工具失败，尝试直接 LLM 响应
-          return this.directLLMResponse(prompt, conversationHistory);
+          return await this.llmResponseWithHistory(prompt);
         }
 
-        // 将结果添加到对话历史
-        this.appendToolResults(conversationHistory, results);
-
-        // 获取最终响应
-        return this.finalLLMResponse(prompt, conversationHistory);
+        // 将工具结果注入 prompt，然后获取最终 LLM 响应
+        const toolContext = results
+          .map((r) => `[工具: ${r.toolName}]\n${r.result}`)
+          .join('\n\n');
+        const finalInput = `${prompt}\n\n以下是工具执行结果，请基于这些结果回答用户的问题：\n\n${toolContext}`;
+        return await this.llmResponseWithHistory(finalInput);
       }
 
-      // 达到迭代次数限制
-      return this.fallback(
-        'iteration_exceeded',
-        this.buildPartialResult(conversationHistory)
-      );
+      return this.fallback('iteration_exceeded');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error(`❌ [Controller] 执行错误: ${errorMessage}`);
@@ -208,31 +259,27 @@ export class Controller {
   }
 
   /**
-   * 检查 Token 限制
+   * 通过 RunnableWithMessageHistory 获取 LLM 响应
+   * 自动读取和保存跨请求会话历史，并记录 token 消耗
    */
-  checkTokenLimit(history: ConversationMessage[]): TokenStatus {
-    const totalTokens = history.reduce((sum, msg) => {
-      return sum + estimateTokenCount(msg.content);
-    }, 0);
+  private async llmResponseWithHistory(input: string): Promise<string> {
+    const response = await this.chainWithHistory.invoke(
+      { input },
+      { configurable: { sessionId: this.sessionId } }
+    );
 
-    const status: TokenStatus = {
-      total: totalTokens,
-      limit: this.config.maxTokens,
-      percentage: totalTokens / this.config.maxTokens,
-      exceeded: totalTokens > this.config.maxTokens,
-      nearThreshold:
-        totalTokens >= this.config.maxTokens * this.config.tokenThreshold,
-    };
+    this.state = 'completed';
+    this.metrics.endTime = Date.now();
+    this.metrics.totalDuration = this.metrics.endTime - this.metrics.startTime;
 
-    this.metrics.tokenStatus = status;
+    // 记录 token 消耗（仅统计 usage，不计算 USD 成本）
+    this.costTracker.record(response.usage_metadata);
 
-    if (status.nearThreshold && !status.exceeded) {
-      console.warn(
-        `⚠️ [Controller] Token 接近阈值: ${totalTokens}/${this.config.maxTokens} (${(status.percentage * 100).toFixed(1)}%)`
-      );
+    if (response && typeof response.content === 'string') {
+      return response.content;
     }
 
-    return status;
+    throw new Error('模型响应格式不正确');
   }
 
   /**
@@ -263,7 +310,7 @@ export class Controller {
       token_exceeded: 'Token 限制超出。请尝试简化您的请求或减少对话历史。',
       timeout: `处理超时。${partialResult ? '部分结果：' + partialResult : '请稍后重试。'}`,
       iteration_exceeded: `已达到最大处理次数。${partialResult ? '部分结果：' + partialResult : '请尝试简化您的请求。'}`,
-      all_tools_failed: '__FALLBACK_TO_LLM__', // 特殊标记，需要调用方处理
+      all_tools_failed: '__FALLBACK_TO_LLM__',
       planner_error: '规划阶段发生错误，请稍后重试。',
       executor_error: '执行阶段发生错误，请稍后重试。',
     };
@@ -333,127 +380,16 @@ export class Controller {
   }
 
   /**
-   * 直接 LLM 响应（不使用工具）
+   * 获取 SessionStore（供测试使用）
    */
-  private async directLLMResponse(
-    prompt: string,
-    conversationHistory: ConversationMessage[]
-  ): Promise<string> {
-    const messages = this.buildMessages(prompt, conversationHistory);
-    const response = await this.llm.invoke(messages);
-    this.state = 'completed';
-    this.metrics.endTime = Date.now();
-    this.metrics.totalDuration = this.metrics.endTime - this.metrics.startTime;
-
-    if (response && typeof response.content === 'string') {
-      return response.content;
-    }
-
-    throw new Error('模型响应格式不正确');
+  getSessionStore(): SessionStore {
+    return this.sessionStore;
   }
 
   /**
-   * 最终 LLM 响应
+   * 获取 CostTracker（供测试和统计使用）
    */
-  private async finalLLMResponse(
-    prompt: string,
-    conversationHistory: ConversationMessage[]
-  ): Promise<string> {
-    const messages = this.buildMessages(prompt, conversationHistory);
-    const response = await this.llm.invoke(messages);
-    this.state = 'completed';
-    this.metrics.endTime = Date.now();
-    this.metrics.totalDuration = this.metrics.endTime - this.metrics.startTime;
-
-    if (response && typeof response.content === 'string') {
-      return response.content;
-    }
-
-    throw new Error('模型响应格式不正确');
-  }
-
-  /**
-   * 构建消息列表
-   */
-  private buildMessages(
-    prompt: string,
-    conversationHistory: ConversationMessage[]
-  ): Array<HumanMessage | SystemMessage | AIMessage | ToolMessage> {
-    const messages: Array<
-      HumanMessage | SystemMessage | AIMessage | ToolMessage
-    > = [];
-
-    // 系统消息
-    messages.push(
-      new SystemMessage(
-        '你是一个智能助手。当用户询问需要实时信息或联网搜索的问题时，你应该使用提供的工具来获取最新信息。'
-      )
-    );
-
-    // 对话历史
-    for (const msg of conversationHistory) {
-      if (msg.role === 'user') {
-        messages.push(new HumanMessage(msg.content));
-      } else if (msg.role === 'assistant') {
-        messages.push(new AIMessage(msg.content));
-      } else if (msg.role === 'tool') {
-        messages.push(
-          new ToolMessage(msg.content, msg.toolCallId ?? '', msg.toolName)
-        );
-      }
-    }
-
-    // 当前输入（如果有）
-    if (
-      prompt &&
-      !conversationHistory.some(
-        (m) => m.role === 'user' && m.content === prompt
-      )
-    ) {
-      messages.push(new HumanMessage(prompt));
-    }
-
-    return messages;
-  }
-
-  /**
-   * 将工具结果添加到对话历史
-   */
-  private appendToolResults(
-    conversationHistory: ConversationMessage[],
-    results: ToolExecutionResult[]
-  ): void {
-    // 添加助手消息
-    conversationHistory.push({
-      role: 'assistant',
-      content: '我将使用工具来回答这个问题。',
-    });
-
-    // 添加工具执行结果
-    for (const result of results) {
-      conversationHistory.push({
-        role: 'tool',
-        content: result.result,
-        toolCallId: result.toolCallId,
-        toolName: result.toolName,
-      });
-    }
-
-    // 添加上下文提示
-    conversationHistory.push({
-      role: 'user',
-      content: '基于之前的工具调用结果，请回答用户的问题。',
-    });
-  }
-
-  /**
-   * 构建部分结果
-   */
-  private buildPartialResult(
-    conversationHistory: ConversationMessage[]
-  ): string {
-    const toolMessages = conversationHistory.filter((m) => m.role === 'tool');
-    if (toolMessages.length === 0) return '';
-    return toolMessages.map((m) => m.content).join('\n');
+  getCostTracker(): CostTracker {
+    return this.costTracker;
   }
 }

@@ -147,6 +147,31 @@ export class AgentCore {
   }
 
   /**
+   * 获取最后一次请求的 token 使用量
+   */
+  getLastTokenUsage(): {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  } | null {
+    const records = this.controller.getCostTracker().getRecentRecords(1);
+    if (records.length === 0) return null;
+    const r = records[0];
+    return {
+      inputTokens: r.usage.input_tokens ?? 0,
+      outputTokens: r.usage.output_tokens ?? 0,
+      totalTokens: r.usage.total_tokens ?? 0,
+    };
+  }
+
+  /**
+   * 获取本次会话累计 token 统计
+   */
+  getSessionTokenSummary() {
+    return this.controller.getCostTracker().getSummary();
+  }
+
+  /**
    * 获取 Controller 实例（用于测试和调试）
    */
   getController(): Controller {
