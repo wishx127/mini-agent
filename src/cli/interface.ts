@@ -10,7 +10,7 @@ import { ModelConfigManager } from '../config/model-config.js';
 import { DisplayManager } from './display-manager.js';
 
 const require = createRequire(import.meta.url);
-const packageJson = require('../package.json') as { version: string };
+const packageJson = require('../../package.json') as { version: string };
 const VERSION = packageJson.version;
 
 const Colors = {
