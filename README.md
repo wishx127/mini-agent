@@ -10,6 +10,7 @@
 - 🔍 内置联网搜索
 - 💬 交互式命令行对话
 - 🧠 跨请求会话记忆 - 基于 `RunnableWithMessageHistory` 的多轮对话上下文保持
+- 💾 长期记忆系统 - 基于向量数据库的持久化记忆，支持跨会话记忆用户偏好和重要信息
 - 📊 Token 管理 - 自动 token 预检与 `trimMessages` 滑动窗口裁剪
 - 📝 环境变量和.env配置文件支持
 - 🔒 TypeScript类型安全
@@ -66,6 +67,8 @@ npm start -- --help
 
 ## 配置选项
 
+### 基础配置
+
 | 环境变量            | 默认值                      | 说明             |
 | ------------------- | --------------------------- | ---------------- |
 | `MODEL_BASE_URL`    | `https://api.openai.com/v1` | 模型API的基础URL |
@@ -75,6 +78,18 @@ npm start -- --help
 | `MODEL_MAX_TOKENS`  | `2048`                      | 最大token数量    |
 | `DISABLED_TOOLS`    | -                           | 禁用的工具列表   |
 | `TAVILY_API_KEY`    | -                           | Tavily API密钥   |
+
+### 长期记忆配置
+
+| 环境变量                       | 默认值       | 说明                     |
+| ------------------------------ | ------------ | ------------------------ |
+| `SUPABASE_URL`                 | -            | Supabase 项目 URL        |
+| `SUPABASE_API_KEY`             | -            | Supabase anon key        |
+| `EMBEDDING_API_KEY`            | -            | Embedding API 密钥       |
+| `LONG_TERM_MEMORY_ENABLED`     | `true`       | 是否启用长期记忆         |
+| `LONG_TERM_MEMORY_TOP_K`       | `5`          | 检索记忆数量             |
+| `MEMORY_EXTRACTION_THRESHOLD`  | `0.7`        | 记忆提取置信度阈值       |
+| `MEMORY_DEFAULT_EXPIRATION_MS` | `2592000000` | 记忆默认过期时间（30天） |
 
 ## 使用示例
 
@@ -90,6 +105,24 @@ $ npm run dev
 
 👤 您: 你好，请介绍一下自己
 🤖 Agent: 你好！我是一个基于LangChain构建的AI助手...
+```
+
+### 长期记忆
+
+启用长期记忆后，Agent 会自动记住用户的偏好和重要信息：
+
+```bash
+👤 您: 我是一名前端开发者，喜欢使用 React 和 TypeScript
+🤖 Agent: 你好！很高兴认识你，作为一名前端开发者...
+
+👤 您: 给我推荐一些技术栈
+🤖 Agent: 基于你的前端开发背景和 React/TypeScript 偏好，我推荐...
+# Agent 会记住之前的对话内容，提供个性化推荐
+
+👤 您: (重新启动程序)
+👤 您: 我之前说过的技术栈偏好还记得吗？
+🤖 Agent: 当然！你之前提到喜欢使用 React 和 TypeScript...
+# 即使重启程序，Agent 仍能回忆起之前的对话
 ```
 
 ### 联网搜索
@@ -263,6 +296,59 @@ Mini Agent 支持跨请求的多轮对话记忆。同一进程内，Agent 会自
 - **Token 统计**：追踪每次 LLM 调用的 token 消耗
 
 详细设计说明见 [会话记忆系统文档](docs/memory-system.md)。
+
+## 长期记忆
+
+Mini Agent 支持基于向量数据库的长期记忆系统，能够持久化存储用户的偏好、重要事实和交互经验，实现真正的"记忆"能力。
+
+### 快速开始
+
+1. **创建 Supabase 项目**
+
+   访问 [Supabase](https://supabase.com) 创建项目，获取 URL 和 API Key。
+
+2. **执行数据库脚本**
+
+   在 Supabase SQL Editor 中执行 `sql/memories_schema.sql`。
+
+3. **配置环境变量**
+
+   ```env
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_API_KEY=your-supabase-anon-key
+   EMBEDDING_API_KEY=your-dashscope-api-key
+   ```
+
+4. **启动 Agent**
+
+   ```bash
+   npm run dev
+   ```
+
+### 主要功能
+
+- **自动记忆提取**：从对话中自动提取重要信息存储
+- **向量相似度检索**：基于语义理解检索相关记忆
+- **记忆合并**：自动合并高度相似的记忆
+- **过期管理**：支持设置记忆过期时间
+- **降级保护**：数据库不可用时自动降级，不影响主流程
+
+### 记忆类型
+
+| 类型              | 说明       | 示例                                 |
+| ----------------- | ---------- | ------------------------------------ |
+| `user_preference` | 用户偏好   | "User prefers dark mode"             |
+| `fact`            | 事实信息   | "User's project uses Node.js 18"     |
+| `experience`      | 交互经验   | "Weather search tool worked well"    |
+| `task`            | 任务相关   | "User needs to deploy to production" |
+| `context`         | 上下文信息 | "Discussing project architecture"    |
+
+详细文档：
+
+- [长期记忆架构文档](docs/long-term-memory-architecture.md)
+- [长期记忆 API 文档](docs/long-term-memory-api.md)
+- [长期记忆配置文档](docs/long-term-memory-configuration.md)
+- [长期记忆迁移指南](docs/long-term-memory-migration.md)
 
 ## 开发
 

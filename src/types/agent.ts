@@ -155,6 +155,12 @@ export interface ControlConfig {
   toolTimeout: number;
   /** 结果最大长度 */
   maxResultLength: number;
+  /** 是否启用长期记忆 */
+  enableLongTermMemory?: boolean;
+  /** 长期记忆检索 top-k 数量 */
+  longTermMemoryTopK?: number;
+  /** 记忆提取置信度阈值 */
+  memoryExtractionThreshold?: number;
 }
 
 /**
@@ -167,6 +173,9 @@ export const DEFAULT_CONTROL_CONFIG: ControlConfig = {
   tokenThreshold: 0.9,
   toolTimeout: 30000,
   maxResultLength: 4000,
+  enableLongTermMemory: false,
+  longTermMemoryTopK: 5,
+  memoryExtractionThreshold: 0.7,
 };
 
 /**

@@ -33,6 +33,11 @@ export interface ModelConfig {
    * 编排层控制配置
    */
   orchestration?: OrchestrationConfig;
+
+  /**
+   * 长期记忆配置
+   */
+  longTermMemory?: LongTermMemoryOptions;
 }
 
 /**
@@ -80,6 +85,41 @@ export interface OrchestrationConfig {
    * 结果最大长度（默认 4000）
    */
   maxResultLength?: number;
+}
+
+/**
+ * 长期记忆配置选项
+ */
+export interface LongTermMemoryOptions {
+  /**
+   * 是否启用长期记忆（默认 false）
+   */
+  enabled?: boolean;
+
+  /**
+   * Supabase URL
+   */
+  supabaseUrl?: string;
+
+  /**
+   * Supabase API Key
+   */
+  supabaseApiKey?: string;
+
+  /**
+   * Embedding API Key（用于生成向量）
+   */
+  embeddingApiKey?: string;
+
+  /**
+   * 检索 top-k 数量（默认 5）
+   */
+  topK?: number;
+
+  /**
+   * 记忆提取置信度阈值（默认 0.7）
+   */
+  extractionThreshold?: number;
 }
 
 /**
