@@ -68,6 +68,19 @@ export class VectorDatabaseClient {
       embeddingModel: 'text-embedding-v3',
       ...config,
     };
+    if (!this.config.tableName) {
+      this.config.tableName = 'memories';
+    }
+    if (!this.config.embeddingDimension) {
+      this.config.embeddingDimension = 1024;
+    }
+    if (!this.config.embeddingApiUrl) {
+      this.config.embeddingApiUrl =
+        'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    }
+    if (!this.config.embeddingModel) {
+      this.config.embeddingModel = 'text-embedding-v3';
+    }
   }
 
   /**
@@ -206,7 +219,7 @@ export class VectorDatabaseClient {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.config.embeddingApiKey ? '已配置' : '未配置'}`,
+            Authorization: `Bearer ${this.config.embeddingApiKey}`,
           },
           body: JSON.stringify({
             model: this.config.embeddingModel,
@@ -476,7 +489,7 @@ export class VectorDatabaseClient {
 
       const typedData = data ?? [];
       const results: MemorySearchResult[] = typedData.map((item) => ({
-        memory: this.recordToMemory(item as Record<string, unknown>),
+        memory: this.recordToMemory(item as unknown as Record<string, unknown>),
         similarity: item.similarity,
       }));
       console.log(
@@ -563,7 +576,7 @@ export class VectorDatabaseClient {
     const results: MemorySearchResult[] = typedData
       .filter((item) => item.embedding)
       .map((item) => ({
-        memory: this.recordToMemory(item as Record<string, unknown>),
+        memory: this.recordToMemory(item as unknown as Record<string, unknown>),
         similarity: this.cosineSimilarity(
           queryEmbedding,
           item.embedding as number[]

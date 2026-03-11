@@ -7,6 +7,7 @@ import {
   ModelConfig,
   DEFAULT_MODEL_CONFIG,
   ToolsConfig,
+  LongTermMemoryOptions,
 } from '../types/model-config.js';
 
 /**
@@ -67,6 +68,9 @@ export class ModelConfigManager {
     // 加载工具配置 - 插件化
     config.tools = this.loadToolsConfigFromEnv();
 
+    // 加载长期记忆配置
+    config.longTermMemory = this.loadLongTermMemoryFromEnv();
+
     return config;
   }
 
@@ -116,6 +120,34 @@ export class ModelConfigManager {
     return {
       disabled: disabled.length > 0 ? disabled : undefined,
       configs,
+    };
+  }
+
+  /**
+   * 从环境变量加载长期记忆配置
+   * 当 SUPABASE_URL 和 SUPABASE_API_KEY 都配置时自动启用
+   */
+  private loadLongTermMemoryFromEnv(): LongTermMemoryOptions | undefined {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseApiKey = process.env.SUPABASE_API_KEY;
+
+    if (!supabaseUrl || !supabaseApiKey) {
+      return undefined;
+    }
+
+    return {
+      enabled: true,
+      supabaseUrl,
+      supabaseApiKey,
+      embeddingApiKey: process.env.EMBEDDING_API_KEY,
+      embeddingApiUrl: process.env.EMBEDDING_API_URL,
+      embeddingModel: process.env.EMBEDDING_MODEL,
+      topK: process.env.LONG_TERM_MEMORY_TOP_K
+        ? parseInt(process.env.LONG_TERM_MEMORY_TOP_K, 10)
+        : undefined,
+      extractionThreshold: process.env.MEMORY_EXTRACTION_THRESHOLD
+        ? parseFloat(process.env.MEMORY_EXTRACTION_THRESHOLD)
+        : undefined,
     };
   }
 

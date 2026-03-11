@@ -134,7 +134,10 @@ export class Controller {
     // 构建 prompt 模板：system + long_term_memory + history 占位符 + human
     const prompt = ChatPromptTemplate.fromMessages([
       ['system', '你是一个智能助手，使用工具来回答需要实时信息的问题。'],
-      new MessagesPlaceholder('long_term_memory'),
+      new MessagesPlaceholder({
+        variableName: 'long_term_memory',
+        optional: true,
+      }),
       new MessagesPlaceholder('history'),
       ['human', '{input}'],
     ]);
@@ -192,7 +195,7 @@ export class Controller {
       console.warn('⚠️ [Controller] maxTokens 必须大于 0，使用默认值');
       merged.maxTokens = DEFAULT_CONTROL_CONFIG.maxTokens;
     }
-    if (merged.maxIterations <= 0) {
+    if (!Number.isFinite(merged.maxIterations) || merged.maxIterations <= 0) {
       console.warn('⚠️ [Controller] maxIterations 必须大于 0，使用默认值');
       merged.maxIterations = DEFAULT_CONTROL_CONFIG.maxIterations;
     }
@@ -438,7 +441,7 @@ export class Controller {
     userMessage: string,
     aiResponse: string
   ): Promise<void> {
-    console.log('🧠 [Controller] 开始异步提取长期记忆...');
+    console.log('🧠 [Controller] 开始异步入队长期记忆...');
     if (!this.longTermMemoryManager) {
       console.log('ℹ️ [Controller] 长期记忆管理器未初始化，跳过提取');
       return;
@@ -452,13 +455,13 @@ export class Controller {
 
     try {
       const startTime = Date.now();
-      await this.longTermMemoryManager.extractAndStore(
+      await this.longTermMemoryManager.enqueueExtraction(
         userMessage,
         aiResponse,
         this.sessionId
       );
       const duration = Date.now() - startTime;
-      console.log(`✓ [Controller] 长期记忆提取完成，耗时: ${duration}ms`);
+      console.log(`✓ [Controller] 长期记忆任务已入队，耗时: ${duration}ms`);
     } catch (error) {
       // 提取失败不影响主流程
       console.warn('⚠️ [Controller] 长期记忆提取失败:', error);

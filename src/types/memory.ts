@@ -114,6 +114,12 @@ export interface VectorDatabaseConfig {
   tableName?: string;
   /** embedding 维度 */
   embeddingDimension?: number;
+  /** embedding API URL */
+  embeddingApiUrl?: string;
+  /** embedding 模型名称 */
+  embeddingModel?: string;
+  /** embedding API Key */
+  embeddingApiKey?: string;
 }
 
 /**
@@ -132,6 +138,12 @@ export interface LongTermMemoryConfig {
   defaultExpirationMs?: number;
   /** 相似度合并阈值 */
   mergeSimilarityThreshold: number;
+  /** 持久化队列目录 */
+  queueDir?: string;
+  /** 队列最大重试次数 */
+  queueMaxAttempts?: number;
+  /** 队列重试退避时间（毫秒） */
+  queueRetryBackoffMs?: number;
 }
 
 /**
@@ -144,4 +156,6 @@ export const DEFAULT_LONG_TERM_MEMORY_CONFIG: LongTermMemoryConfig = {
   maxExtractionsPerTurn: 3,
   defaultExpirationMs: 30 * 24 * 60 * 60 * 1000, // 30 天
   mergeSimilarityThreshold: 0.95,
+  queueMaxAttempts: 3,
+  queueRetryBackoffMs: 30_000,
 };

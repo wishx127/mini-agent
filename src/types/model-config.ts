@@ -112,6 +112,16 @@ export interface LongTermMemoryOptions {
   embeddingApiKey?: string;
 
   /**
+   * Embedding API URL（可选，默认使用阿里云 dashscope）
+   */
+  embeddingApiUrl?: string;
+
+  /**
+   * Embedding 模型名称（可选，默认 text-embedding-v3）
+   */
+  embeddingModel?: string;
+
+  /**
    * 检索 top-k 数量（默认 5）
    */
   topK?: number;
@@ -120,6 +130,16 @@ export interface LongTermMemoryOptions {
    * 记忆提取置信度阈值（默认 0.7）
    */
   extractionThreshold?: number;
+
+  /**
+   * 向量数据库表名（默认 memories）
+   */
+  tableName?: string;
+
+  /**
+   * Embedding 维度（默认 1536）
+   */
+  embeddingDimension?: number;
 }
 
 /**

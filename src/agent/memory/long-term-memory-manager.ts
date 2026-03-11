@@ -12,6 +12,7 @@ import { DEFAULT_LONG_TERM_MEMORY_CONFIG } from '../../types/memory.js';
 
 import { VectorDatabaseClient } from './vector-database-client.js';
 import { MemoryExtractor } from './memory-extractor.js';
+import { MemoryJobQueue } from './memory-job-queue.js';
 
 /**
  * 记忆统计信息
@@ -38,6 +39,9 @@ export class LongTermMemoryManager {
   private extractor: MemoryExtractor;
   private config: LongTermMemoryConfig;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private queue: MemoryJobQueue;
+  private queueWorkerRunning = false;
+  private queueWorkerStopped = false;
 
   constructor(
     dbClient: VectorDatabaseClient,
@@ -59,6 +63,7 @@ export class LongTermMemoryManager {
       confidenceThreshold: this.config.extractionThreshold,
       maxExtractionsPerTurn: this.config.maxExtractionsPerTurn,
     });
+    this.queue = new MemoryJobQueue(this.config.queueDir);
     console.log('✓ [LongTermMemoryManager] 初始化完成');
   }
 
@@ -70,9 +75,11 @@ export class LongTermMemoryManager {
     const connected = await this.dbClient.initialize();
     if (connected) {
       console.log('✓ [LongTermMemoryManager] 数据库连接成功');
+      await this.queue.initialize();
       // 启动过期清理定时任务
       console.log('🔄 [LongTermMemoryManager] 启动过期清理定时任务...');
       this.startCleanupTask();
+      this.startQueueWorker();
       console.log('✓ [LongTermMemoryManager] 初始化完成');
     } else {
       console.error('❌ [LongTermMemoryManager] 数据库连接失败');
@@ -90,6 +97,7 @@ export class LongTermMemoryManager {
       this.cleanupInterval = null;
       console.log('✓ [LongTermMemoryManager] 清理任务已停止');
     }
+    this.queueWorkerStopped = true;
     this.dbClient.disconnect();
     console.log('✓ [LongTermMemoryManager] 管理器已关闭');
   }
@@ -133,6 +141,22 @@ export class LongTermMemoryManager {
     }
 
     return memory;
+  }
+
+  /**
+   * 将记忆提取任务入队（持久化到磁盘）
+   */
+  async enqueueExtraction(
+    userMessage: string,
+    aiResponse: string,
+    sessionId?: string
+  ): Promise<void> {
+    if (!this.config.enabled) {
+      console.warn('⚠️ [LongTermMemoryManager] 长期记忆未启用，跳过入队');
+      return;
+    }
+    await this.queue.enqueue({ userMessage, aiResponse, sessionId });
+    this.startQueueWorker();
   }
 
   /**
@@ -290,7 +314,11 @@ export class LongTermMemoryManager {
     console.log('🔄 [LongTermMemoryManager] 调用记忆提取器...');
     const result = await this.extractor.extract(userMessage, aiResponse);
 
-    if (!result.success || result.memories.length === 0) {
+    if (!result.success) {
+      throw new Error(result.error || '记忆提取失败');
+    }
+
+    if (result.memories.length === 0) {
       console.log('ℹ️ [LongTermMemoryManager] 未提取到有效记忆');
       return result;
     }
@@ -331,6 +359,10 @@ export class LongTermMemoryManager {
     console.log(
       `✓ [LongTermMemoryManager] 记忆提取和存储完成，成功存储 ${storedMemories.length}/${result.memories.length} 条`
     );
+
+    if (storedMemories.length !== result.memories.length) {
+      throw new Error('记忆存储未完全成功');
+    }
 
     return {
       ...result,
@@ -401,6 +433,53 @@ export class LongTermMemoryManager {
       );
     } else {
       console.log('ℹ️ [LongTermMemoryManager] 未发现需要合并的相似记忆');
+    }
+  }
+
+  /**
+   * 启动后台队列处理器（单实例）
+   */
+  private startQueueWorker(): void {
+    if (this.queueWorkerRunning || this.queueWorkerStopped) {
+      return;
+    }
+    this.queueWorkerRunning = true;
+    void this.runQueueWorker();
+  }
+
+  private async runQueueWorker(): Promise<void> {
+    try {
+      while (!this.queueWorkerStopped) {
+        if (!this.dbClient.isAvailable()) {
+          console.warn('⚠️ [LongTermMemoryManager] 数据库不可用，暂停队列处理');
+          break;
+        }
+        const jobs = await this.queue.take(1);
+        if (jobs.length === 0) {
+          break;
+        }
+
+        for (const job of jobs) {
+          try {
+            await this.extractAndStore(
+              job.userMessage,
+              job.aiResponse,
+              job.sessionId
+            );
+            await this.queue.ack(job);
+          } catch (error) {
+            console.warn('⚠️ [LongTermMemoryManager] 队列任务处理失败:', error);
+            await this.queue.retryOrFail(
+              job,
+              error,
+              this.config.queueMaxAttempts || 3,
+              this.config.queueRetryBackoffMs || 30_000
+            );
+          }
+        }
+      }
+    } finally {
+      this.queueWorkerRunning = false;
     }
   }
 
