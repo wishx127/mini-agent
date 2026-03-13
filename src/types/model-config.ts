@@ -140,6 +140,26 @@ export interface LongTermMemoryOptions {
    * Embedding 维度（默认 1536）
    */
   embeddingDimension?: number;
+
+  /**
+   * 是否启用队列 worker（默认 true）
+   */
+  queueWorkerEnabled?: boolean;
+
+  /**
+   * 队列最大重试次数（默认 3）
+   */
+  queueMaxAttempts?: number;
+
+  /**
+   * 队列重试退避时间（毫秒，默认 30000）
+   */
+  queueRetryBackoffMs?: number;
+
+  /**
+   * 队列轮询间隔（毫秒，默认 5000）
+   */
+  queuePollIntervalMs?: number;
 }
 
 /**

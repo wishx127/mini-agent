@@ -26,6 +26,7 @@ import {
   ToolExecutionResult,
   PlanningContext,
   ToolInfo,
+  ConversationMessage,
   TokenStatus,
 } from '../types/agent.js';
 import type { VectorDatabaseConfig } from '../types/memory.js';
@@ -40,7 +41,8 @@ import {
   runTokenPreflight,
   getTokenStatus,
   VectorDatabaseClient,
-  LongTermMemoryManager,
+  LongTermMemoryReader,
+  MemoryDispatcher,
 } from './memory/index.js';
 
 /**
@@ -48,7 +50,7 @@ import {
  *
  * 职责：
  * - 跨请求会话记忆（通过 RunnableWithMessageHistory）
- * - 长期记忆管理（通过 LongTermMemoryManager）
+ * - 长期记忆检索与派发（通过 LongTermMemoryReader / MemoryDispatcher）
  * - Token 上限控制（预检 + 链内裁剪）
  * - 超时管理
  * - 调用次数限制
@@ -65,7 +67,8 @@ export class Controller {
   private toolRegistry: ToolRegistry;
   private sessionStore: SessionStore;
   private costTracker: CostTracker;
-  private longTermMemoryManager: LongTermMemoryManager | null = null;
+  private longTermMemoryReader: LongTermMemoryReader | null = null;
+  private memoryDispatcher: MemoryDispatcher | null = null;
   private readonly sessionId: string = 'default';
   private chainWithHistory: Runnable<{ input: string }, AIMessage>;
   private chainWithLongTermMemory: Runnable<
@@ -109,21 +112,25 @@ export class Controller {
       });
 
       const dbClient = new VectorDatabaseClient(vectorDbConfig);
-      this.longTermMemoryManager = new LongTermMemoryManager(dbClient, llm, {
+      this.longTermMemoryReader = new LongTermMemoryReader(dbClient, {
         enabled: true,
         topK: this.config.longTermMemoryTopK || 5,
-        extractionThreshold: this.config.memoryExtractionThreshold || 0.7,
       });
-      console.log('✓ [Controller] LongTermMemoryManager 实例创建成功');
+      this.memoryDispatcher = new MemoryDispatcher({
+        enabled: true,
+      });
+      console.log(
+        '✓ [Controller] LongTermMemoryReader/Dispatcher 实例创建成功'
+      );
 
       // 异步初始化，不阻塞构造函数
       console.log('🔄 [Controller] 异步初始化向量数据库连接...');
-      this.longTermMemoryManager.initialize().catch((err) => {
+      this.longTermMemoryReader.initialize().catch((err) => {
         console.warn(
           '⚠️ [Controller] 长期记忆初始化失败，降级为仅短期记忆模式:',
           err
         );
-        this.longTermMemoryManager = null;
+        this.longTermMemoryReader = null;
       });
     } else {
       console.log(
@@ -244,19 +251,19 @@ export class Controller {
     let longTermMemoryContext = '';
     console.log('🔍 [Controller] 开始检索长期记忆...');
     try {
-      if (this.longTermMemoryManager) {
-        console.log('📤 [Controller] 调用长期记忆管理器进行检索...');
+      if (this.longTermMemoryReader) {
+        console.log('📤 [Controller] 调用长期记忆读取器进行检索...');
         console.log(
           '📋 [Controller] 检索查询:',
           prompt.substring(0, 50) + (prompt.length > 50 ? '...' : '')
         );
-        const memories = await this.longTermMemoryManager.search(prompt);
+        const memories = await this.longTermMemoryReader.search(prompt);
         console.log(`📊 [Controller] 检索到 ${memories.length} 条相关记忆`);
 
         if (memories.length > 0) {
           console.log('🔄 [Controller] 格式化记忆为 Prompt 上下文...');
           longTermMemoryContext =
-            this.longTermMemoryManager.formatMemoriesForPrompt(memories);
+            this.longTermMemoryReader.formatMemoriesForPrompt(memories);
           console.log('✓ [Controller] 长期记忆上下文已生成');
           console.log(
             '📋 [Controller] 记忆上下文预览:',
@@ -266,7 +273,7 @@ export class Controller {
           console.log('ℹ️ [Controller] 未找到相关长期记忆');
         }
       } else {
-        console.log('ℹ️ [Controller] 长期记忆管理器未初始化，跳过检索');
+        console.log('ℹ️ [Controller] 长期记忆读取器未初始化，跳过检索');
       }
     } catch (error) {
       console.warn(
@@ -301,6 +308,12 @@ export class Controller {
         }
       }
 
+      // 准备对话历史（供 Planner 判定使用）
+      const updatedHistoryMessages = await historyStore.getMessages();
+      const conversationHistory = this.toConversationHistory(
+        updatedHistoryMessages
+      );
+
       // 检查是否有可用工具
       const enabledTools = this.toolRegistry.getEnabledTools();
       if (enabledTools.length === 0) {
@@ -323,7 +336,7 @@ export class Controller {
         // 规划阶段
         const planningContext: PlanningContext = {
           prompt,
-          conversationHistory: [],
+          conversationHistory,
           availableTools: this.getAvailableToolsInfo(enabledTools),
         };
 
@@ -388,7 +401,7 @@ export class Controller {
   ): Promise<string> {
     console.log('🤖 [Controller] 开始生成 LLM 响应...');
     const hasLongTermMemory =
-      this.longTermMemoryManager && longTermMemoryContext;
+      this.longTermMemoryReader && longTermMemoryContext;
 
     console.log('📋 [Controller] LLM 调用配置:', {
       hasLongTermMemory,
@@ -442,8 +455,8 @@ export class Controller {
     aiResponse: string
   ): Promise<void> {
     console.log('🧠 [Controller] 开始异步入队长期记忆...');
-    if (!this.longTermMemoryManager) {
-      console.log('ℹ️ [Controller] 长期记忆管理器未初始化，跳过提取');
+    if (!this.memoryDispatcher) {
+      console.log('ℹ️ [Controller] 长期记忆派发器未初始化，跳过入队');
       return;
     }
 
@@ -455,11 +468,11 @@ export class Controller {
 
     try {
       const startTime = Date.now();
-      await this.longTermMemoryManager.enqueueExtraction(
+      await this.memoryDispatcher.enqueue({
         userMessage,
         aiResponse,
-        this.sessionId
-      );
+        sessionId: this.sessionId,
+      });
       const duration = Date.now() - startTime;
       console.log(`✓ [Controller] 长期记忆任务已入队，耗时: ${duration}ms`);
     } catch (error) {
@@ -595,6 +608,48 @@ export class Controller {
   }
 
   /**
+   * 将 LangChain BaseMessage 转换为 Planner 使用的对话历史格式
+   */
+  private toConversationHistory(
+    messages: BaseMessage[]
+  ): ConversationMessage[] {
+    return messages.map((msg) => {
+      const rawType =
+        typeof (msg as { _getType?: () => string })._getType === 'function'
+          ? (msg as { _getType: () => string })._getType()
+          : (msg as { type?: string }).type;
+
+      const role: ConversationMessage['role'] =
+        rawType === 'human'
+          ? 'user'
+          : rawType === 'ai'
+            ? 'assistant'
+            : rawType === 'tool'
+              ? 'tool'
+              : 'system';
+
+      const content =
+        typeof msg.content === 'string'
+          ? msg.content
+          : JSON.stringify(msg.content);
+
+      const toolCallId =
+        (msg as { tool_call_id?: string; toolCallId?: string }).tool_call_id ??
+        (msg as { tool_call_id?: string; toolCallId?: string }).toolCallId;
+      const toolName =
+        (msg as { name?: string; toolName?: string }).name ??
+        (msg as { name?: string; toolName?: string }).toolName;
+
+      return {
+        role,
+        content,
+        ...(toolCallId ? { toolCallId } : {}),
+        ...(toolName ? { toolName } : {}),
+      };
+    });
+  }
+
+  /**
    * 获取 SessionStore（供测试使用）
    */
   getSessionStore(): SessionStore {
@@ -609,9 +664,16 @@ export class Controller {
   }
 
   /**
-   * 获取 LongTermMemoryManager（供测试使用）
+   * 获取 LongTermMemoryReader（供测试使用）
    */
-  getLongTermMemoryManager(): LongTermMemoryManager | null {
-    return this.longTermMemoryManager;
+  getLongTermMemoryReader(): LongTermMemoryReader | null {
+    return this.longTermMemoryReader;
+  }
+
+  /**
+   * 获取 MemoryDispatcher（供测试使用）
+   */
+  getMemoryDispatcher(): MemoryDispatcher | null {
+    return this.memoryDispatcher;
   }
 }

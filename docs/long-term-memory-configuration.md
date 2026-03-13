@@ -31,39 +31,26 @@ SUPABASE_API_KEY=your-supabase-anon-key
 # ============================================
 # Embedding API 配置（长期记忆必填）
 # ============================================
-# 使用阿里云 DashScope API (Qwen text-embedding-v3)
+# 阿里云 DashScope API (Qwen text-embedding-v3)
 EMBEDDING_API_KEY=your-dashscope-api-key
+
+# 可选：自定义 Embedding 配置
+EMBEDDING_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v3
 
 # ============================================
 # 长期记忆配置（可选）
 # ============================================
-# 是否启用长期记忆（默认 true）
-LONG_TERM_MEMORY_ENABLED=true
 # 检索记忆数量（默认 5）
 LONG_TERM_MEMORY_TOP_K=5
 # 记忆提取置信度阈值（默认 0.7）
 MEMORY_EXTRACTION_THRESHOLD=0.7
-# 记忆默认过期时间（毫秒，默认 30 天）
-MEMORY_DEFAULT_EXPIRATION_MS=2592000000
-# 记忆合并相似度阈值（默认 0.95）
-MEMORY_MERGE_THRESHOLD=0.95
-# 每次提取的最大记忆数（默认 3）
-MEMORY_MAX_EXTRACTIONS_PER_TURN=3
 
 # ============================================
 # 工具配置（可选）
 # ============================================
 DISABLED_TOOLS=tavily
 TAVILY_API_KEY=your-tavily-api-key
-
-# ============================================
-# 编排层配置（可选）
-# ============================================
-ORCHESTRATION_MAX_ITERATIONS=3
-ORCHESTRATION_TIMEOUT=30000
-ORCHESTRATION_TOKEN_THRESHOLD=0.9
-ORCHESTRATION_TOOL_TIMEOUT=10000
-ORCHESTRATION_MAX_RESULT_LENGTH=4000
 ```
 
 ## 获取配置值
@@ -135,16 +122,13 @@ MODEL_API_KEY=your-api-key
 
 ```typescript
 interface ControlConfig {
-  // 长期记忆配置
-  enableLongTermMemory: boolean; // 是否启用长期记忆
-  longTermMemoryTopK: number; // 检索记忆数量
-  memoryExtractionThreshold: number; // 提取置信度阈值
-
-  // 编排层配置
-  maxTokens: number; // 最大 token 数
-  maxIterations: number; // 最大迭代次数
-  timeout: number; // 超时时间（ms）
-  tokenThreshold: number; // token 阈值
+  enableLongTermMemory: boolean;
+  longTermMemoryTopK: number;
+  memoryExtractionThreshold: number;
+  maxTokens: number;
+  maxIterations: number;
+  timeout: number;
+  tokenThreshold: number;
 }
 ```
 
@@ -152,7 +136,7 @@ interface ControlConfig {
 
 ```typescript
 const DEFAULT_CONTROL_CONFIG: ControlConfig = {
-  enableLongTermMemory: true,
+  enableLongTermMemory: false,
   longTermMemoryTopK: 5,
   memoryExtractionThreshold: 0.7,
   maxTokens: 4096,
@@ -171,13 +155,9 @@ const controller = new Controller(
   llm,
   toolRegistry,
   {
-    // 启用长期记忆
     enableLongTermMemory: true,
-    // 检索更多记忆
     longTermMemoryTopK: 10,
-    // 更严格的提取
     memoryExtractionThreshold: 0.8,
-    // 其他配置...
     maxTokens: 8192,
     timeout: 60000,
   },
@@ -191,10 +171,25 @@ const controller = new Controller(
 
 ```typescript
 interface VectorDatabaseConfig {
-  supabaseUrl: string; // Supabase 项目 URL
-  supabaseKey: string; // Supabase anon key
-  embeddingApiKey: string; // Embedding API key
+  supabaseUrl: string;
+  supabaseApiKey: string;
+  tableName?: string;
+  embeddingDimension?: number;
+  embeddingApiUrl?: string;
+  embeddingModel?: string;
+  embeddingApiKey?: string;
 }
+```
+
+### 默认值
+
+```typescript
+const DEFAULT_VECTOR_CONFIG = {
+  tableName: 'memories',
+  embeddingDimension: 1024,
+  embeddingApiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  embeddingModel: 'text-embedding-v3',
+};
 ```
 
 ### 使用示例
@@ -204,12 +199,73 @@ import { VectorDatabaseClient } from './agent/memory/vector-database-client.js';
 
 const dbClient = new VectorDatabaseClient({
   supabaseUrl: process.env.SUPABASE_URL!,
-  supabaseKey: process.env.SUPABASE_API_KEY!,
+  supabaseApiKey: process.env.SUPABASE_API_KEY!,
   embeddingApiKey: process.env.EMBEDDING_API_KEY!,
 });
 ```
 
 ## 长期记忆详细配置
+
+### LongTermMemoryConfig 接口
+
+```typescript
+interface LongTermMemoryConfig {
+  enabled: boolean;
+  topK: number;
+  extractionThreshold: number;
+  maxExtractionsPerTurn: number;
+  defaultExpirationMs?: number;
+  mergeSimilarityThreshold: number;
+  queueDir?: string;
+  queueMaxAttempts?: number;
+  queueRetryBackoffMs?: number;
+  queueWorkerEnabled?: boolean;
+  queuePollIntervalMs?: number;
+}
+```
+
+### 默认值
+
+```typescript
+const DEFAULT_LONG_TERM_MEMORY_CONFIG: LongTermMemoryConfig = {
+  enabled: false,
+  topK: 5,
+  extractionThreshold: 0.7,
+  maxExtractionsPerTurn: 3,
+  defaultExpirationMs: 30 * 24 * 60 * 60 * 1000,
+  mergeSimilarityThreshold: 0.95,
+  queueMaxAttempts: 3,
+  queueRetryBackoffMs: 30_000,
+  queueWorkerEnabled: true,
+  queuePollIntervalMs: 10_000,
+};
+```
+
+### 配置说明
+
+| 配置项                     | 类型    | 默认值                     | 说明                 |
+| -------------------------- | ------- | -------------------------- | -------------------- |
+| `enabled`                  | boolean | false                      | 是否启用长期记忆     |
+| `topK`                     | number  | 5                          | 检索记忆数量         |
+| `extractionThreshold`      | number  | 0.7                        | 记忆提取置信度阈值   |
+| `maxExtractionsPerTurn`    | number  | 3                          | 每次提取的最大记忆数 |
+| `defaultExpirationMs`      | number  | 30天                       | 记忆默认过期时间     |
+| `mergeSimilarityThreshold` | number  | 0.95                       | 记忆合并相似度阈值   |
+| `queueDir`                 | string  | ~/.mini-agent/memory-queue | 队列文件存储目录     |
+| `queueMaxAttempts`         | number  | 3                          | 队列最大重试次数     |
+| `queueRetryBackoffMs`      | number  | 30000                      | 队列重试退避时间     |
+| `queueWorkerEnabled`       | boolean | true                       | 是否启用队列消费器   |
+| `queuePollIntervalMs`      | number  | 10000                      | 队列轮询间隔         |
+
+### Worker 生命周期与日志
+
+当使用 CLI 启动时，长期记忆 Worker 会被自动拉起并管理生命周期：
+
+- CLI 运行期间，Worker 常驻并持续轮询队列
+- CLI 退出后，Worker 会继续处理队列，**队列清空后自动退出**
+- Worker 日志写入 `memory-worker.log`
+
+如需禁用 Worker 自动启动，可将 `queueWorkerEnabled=false`。
 
 ### 启用/禁用长期记忆
 
@@ -218,9 +274,7 @@ const dbClient = new VectorDatabaseClient({
 new Controller(
   llm,
   toolRegistry,
-  {
-    enableLongTermMemory: true,
-  },
+  { enableLongTermMemory: true },
   vectorDbConfig
 );
 
@@ -241,14 +295,8 @@ new Controller(llm, toolRegistry, {
 - **节省 token**：2-3（最小化成本）
 
 ```typescript
-// 检索更多记忆
 new Controller(llm, toolRegistry, {
   longTermMemoryTopK: 10,
-});
-
-// 减少记忆数量
-new Controller(llm, toolRegistry, {
-  longTermMemoryTopK: 3,
 });
 ```
 
@@ -263,33 +311,12 @@ new Controller(llm, toolRegistry, {
 - **宽松提取**：0.4-0.5（提取更多记忆，可能包含噪音）
 
 ```typescript
-// 精准提取
 new Controller(llm, toolRegistry, {
   memoryExtractionThreshold: 0.85,
-});
-
-// 宽松提取
-new Controller(llm, toolRegistry, {
-  memoryExtractionThreshold: 0.5,
 });
 ```
 
 ### 记忆过期配置
-
-**通过环境变量设置默认过期时间：**
-
-```env
-# 7 天过期
-MEMORY_DEFAULT_EXPIRATION_MS=604800000
-
-# 30 天过期（默认）
-MEMORY_DEFAULT_EXPIRATION_MS=2592000000
-
-# 永不过期（不设置或设为 0）
-MEMORY_DEFAULT_EXPIRATION_MS=0
-```
-
-**手动设置单个记忆过期时间：**
 
 ```typescript
 const manager = controller.getLongTermMemoryManager();
@@ -300,14 +327,34 @@ await manager.create({
 });
 ```
 
-### 记忆合并配置
+### 队列配置
 
-```env
-# 相似度阈值（默认 0.95）
-MEMORY_MERGE_THRESHOLD=0.95
+长期记忆使用持久化队列异步处理记忆存储任务。
 
-# 每次最大提取数（默认 3）
-MEMORY_MAX_EXTRACTIONS_PER_TURN=3
+```typescript
+// 配置队列
+const controller = new Controller(
+  llm,
+  toolRegistry,
+  {
+    enableLongTermMemory: true,
+  },
+  {
+    supabaseUrl: process.env.SUPABASE_URL!,
+    supabaseApiKey: process.env.SUPABASE_API_KEY!,
+    embeddingApiKey: process.env.EMBEDDING_API_KEY!,
+  }
+);
+
+// 队列配置（通过 LongTermMemoryConfig）
+const manager = controller.getLongTermMemoryManager();
+manager.initialize({
+  queueDir: '/path/to/queue',
+  queueMaxAttempts: 3,
+  queueRetryBackoffMs: 30000,
+  queueWorkerEnabled: true,
+  queuePollIntervalMs: 10000,
+});
 ```
 
 ## 配置最佳实践
@@ -317,10 +364,8 @@ MEMORY_MAX_EXTRACTIONS_PER_TURN=3
 ```env
 # 开发环境：启用调试，宽松阈值
 MODEL_NAME=gpt-3.5-turbo
-LONG_TERM_MEMORY_ENABLED=true
 LONG_TERM_MEMORY_TOP_K=5
 MEMORY_EXTRACTION_THRESHOLD=0.6
-MEMORY_DEFAULT_EXPIRATION_MS=604800000  # 7 天
 ```
 
 ### 2. 生产环境配置
@@ -328,11 +373,8 @@ MEMORY_DEFAULT_EXPIRATION_MS=604800000  # 7 天
 ```env
 # 生产环境：更严格的配置
 MODEL_NAME=gpt-4
-LONG_TERM_MEMORY_ENABLED=true
 LONG_TERM_MEMORY_TOP_K=5
 MEMORY_EXTRACTION_THRESHOLD=0.75
-MEMORY_DEFAULT_EXPIRATION_MS=2592000000  # 30 天
-MEMORY_MERGE_THRESHOLD=0.95
 ```
 
 ### 3. 成本优化配置
@@ -342,7 +384,6 @@ MEMORY_MERGE_THRESHOLD=0.95
 MODEL_NAME=gpt-3.5-turbo
 LONG_TERM_MEMORY_TOP_K=3
 MEMORY_EXTRACTION_THRESHOLD=0.8
-MEMORY_MAX_EXTRACTIONS_PER_TURN=2
 ```
 
 ### 4. 知识密集场景配置
@@ -351,8 +392,6 @@ MEMORY_MAX_EXTRACTIONS_PER_TURN=2
 # 知识密集：提取更多记忆
 LONG_TERM_MEMORY_TOP_K=10
 MEMORY_EXTRACTION_THRESHOLD=0.6
-MEMORY_MAX_EXTRACTIONS_PER_TURN=5
-MEMORY_DEFAULT_EXPIRATION_MS=0  # 永不过期
 ```
 
 ## 配置验证
@@ -362,33 +401,31 @@ MEMORY_DEFAULT_EXPIRATION_MS=0  # 永不过期
 Controller 会在初始化时验证配置：
 
 ```typescript
-// 无效配置示例
 new Controller(llm, toolRegistry, {
   maxTokens: -1, // 会警告并使用默认值
   maxIterations: 0, // 会警告并使用默认值
   timeout: -100, // 会警告并使用默认值
 });
-
-// 控制台输出：
-// ⚠️ [Controller] maxTokens 必须大于 0，使用默认值
-// ⚠️ [Controller] maxIterations 必须大于 0，使用默认值
-// ⚠️ [Controller] timeout 必须大于 0，使用默认值
 ```
 
 ### 手动验证
 
 ```typescript
-// 检查长期记忆管理器是否初始化
-const manager = controller.getLongTermMemoryManager();
-if (!manager) {
-  console.log('长期记忆未启用或初始化失败');
-}
+import { VectorDatabaseClient } from './agent/memory/vector-database-client.js';
 
-// 检查数据库连接
-const dbClient = new VectorDatabaseClient(config);
+const dbClient = new VectorDatabaseClient({
+  supabaseUrl: process.env.SUPABASE_URL!,
+  supabaseApiKey: process.env.SUPABASE_API_KEY!,
+  embeddingApiKey: process.env.EMBEDDING_API_KEY!,
+});
+
 const isHealthy = await dbClient.healthCheck();
 if (!isHealthy) {
   console.log('数据库连接失败');
+}
+
+if (!dbClient.isAvailable()) {
+  console.log('向量数据库不可用');
 }
 ```
 
@@ -422,6 +459,7 @@ new Controller(llm, toolRegistry, {
 2. 确认 `EMBEDDING_API_KEY` 已设置
 3. 确认 `enableLongTermMemory` 为 `true`
 4. 检查数据库表是否创建成功
+5. 检查向量数据库连接状态
 
 ### 性能问题
 

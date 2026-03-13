@@ -41,13 +41,13 @@ const controller = new Controller(
   llm,
   toolRegistry,
   {
-    enableLongTermMemory: true, // 启用长期记忆
-    longTermMemoryTopK: 5, // 检索 top 5 相关记忆
-    memoryExtractionThreshold: 0.7, // 提取置信度阈值
+    enableLongTermMemory: true,
+    longTermMemoryTopK: 5,
+    memoryExtractionThreshold: 0.7,
   },
   {
     supabaseUrl: process.env.SUPABASE_URL!,
-    supabaseKey: process.env.SUPABASE_API_KEY!,
+    supabaseApiKey: process.env.SUPABASE_API_KEY!,
     embeddingApiKey: process.env.EMBEDDING_API_KEY!,
   }
 );
@@ -56,7 +56,7 @@ const controller = new Controller(
 ### 3. 基本使用
 
 ```typescript
-// 执行对话（自动检索和存储长期记忆）
+// 执行对话（自动检索长期记忆）
 const response = await controller.execute('我是一名前端开发者，喜欢用 React');
 console.log(response);
 
@@ -91,13 +91,13 @@ constructor(
 
 ```typescript
 interface ControlConfig {
-  enableLongTermMemory: boolean; // 是否启用长期记忆
-  longTermMemoryTopK: number; // 检索记忆数量
-  memoryExtractionThreshold: number; // 记忆提取置信度阈值
-  maxTokens: number; // 最大 token 数
-  maxIterations: number; // 最大迭代次数
-  timeout: number; // 超时时间（ms）
-  tokenThreshold: number; // token 阈值
+  enableLongTermMemory: boolean;
+  longTermMemoryTopK: number;
+  memoryExtractionThreshold: number;
+  maxTokens: number;
+  maxIterations: number;
+  timeout: number;
+  tokenThreshold: number;
 }
 ```
 
@@ -119,48 +119,88 @@ interface ControlConfig {
 const response = await controller.execute('我喜欢使用 TypeScript');
 ```
 
-#### getLongTermMemoryManager(): LongTermMemoryManager | null
+### VectorDatabaseClient
 
-获取长期记忆管理器实例（用于高级操作）。
+底层向量数据库客户端。
+
+#### 构造函数
 
 ```typescript
-const manager = controller.getLongTermMemoryManager();
-if (manager) {
-  const stats = await manager.getStats();
-  console.log(stats);
+constructor(config: VectorDatabaseConfig)
+```
+
+**VectorDatabaseConfig 接口：**
+
+```typescript
+interface VectorDatabaseConfig {
+  supabaseUrl: string;
+  supabaseApiKey: string;
+  tableName?: string;
+  embeddingDimension?: number;
+  embeddingApiUrl?: string;
+  embeddingModel?: string;
+  embeddingApiKey?: string;
 }
 ```
 
-### LongTermMemoryManager
+#### initialize(): Promise<boolean>
 
-#### create(input: CreateMemoryInput): Promise<Memory | null>
-
-手动创建新记忆。
-
-**参数：**
+初始化数据库连接。
 
 ```typescript
-interface CreateMemoryInput {
-  type: MemoryType; // 记忆类型
-  content: string; // 记忆内容
-  metadata?: MemoryMetadata; // 元数据
-  sessionId?: string; // 会话 ID
-  expiresAt?: Date; // 过期时间
-}
+const dbClient = new VectorDatabaseClient(config);
+const connected = await dbClient.initialize();
 ```
 
-**示例：**
+#### generateEmbedding(text: string): Promise<number[] | null>
+
+生成文本的向量表示。
 
 ```typescript
-const memory = await manager.create({
+const embedding = await dbClient.generateEmbedding('这是一个测试文本');
+// 返回 1024 维向量数组
+```
+
+#### searchSimilar(queryEmbedding: number[], topK: number, filters?: SearchFilters): Promise<MemorySearchResult[]>
+
+执行向量相似度搜索。
+
+```typescript
+const results = await dbClient.searchSimilar(embedding, 5, {
   type: 'user_preference',
-  content: 'User prefers dark mode in the editor',
-  metadata: {
-    source: 'explicit',
-    importance: 'high',
-  },
   sessionId: 'session-123',
 });
+```
+
+#### isAvailable(): boolean
+
+检查客户端是否可用。
+
+```typescript
+if (dbClient.isAvailable()) {
+  const results = await dbClient.searchSimilar(embedding, 5);
+}
+```
+
+#### healthCheck(): Promise<boolean>
+
+检查数据库连接状态。
+
+```typescript
+const isHealthy = await dbClient.healthCheck();
+```
+
+### LongTermMemoryReader
+
+长期记忆读取器，负责检索和格式化。
+
+#### 构造函数
+
+```typescript
+constructor(
+  dbClient: VectorDatabaseClient,
+  config?: Partial<LongTermMemoryConfig>
+)
 ```
 
 #### search(query: string, topK?: number): Promise<MemorySearchResult[]>
@@ -184,12 +224,71 @@ interface MemorySearchResult {
 **示例：**
 
 ```typescript
-const results = await manager.search('编辑器偏好', 10);
+const results = await reader.search('编辑器偏好', 10);
 for (const result of results) {
   console.log(`内容: ${result.memory.content}`);
   console.log(`相似度: ${(result.similarity * 100).toFixed(2)}%`);
 }
 ```
+
+#### formatMemoriesForPrompt(results: MemorySearchResult[]): string
+
+格式化记忆为 prompt 上下文。
+
+```typescript
+const results = await reader.search('查询内容', 5);
+const context = reader.formatMemoriesForPrompt(results);
+// 输出:
+// 以下是可能与当前对话相关的历史记忆：
+// 1. [用户偏好] 用户喜欢深色主题 (相关度: 95%)
+// 2. [事实] 用户是前端开发者 (相关度: 87%)
+```
+
+### LongTermMemoryManager
+
+#### 构造函数
+
+```typescript
+constructor(
+  dbClient: VectorDatabaseClient,
+  llm: ChatOpenAI,
+  config?: Partial<LongTermMemoryConfig>
+)
+```
+
+#### create(input: CreateMemoryInput): Promise<Memory | null>
+
+手动创建新记忆。
+
+**参数：**
+
+```typescript
+interface CreateMemoryInput {
+  type: MemoryType;
+  content: string;
+  metadata?: MemoryMetadata;
+  sessionId?: string;
+  expiresAt?: Date;
+}
+```
+
+**示例：**
+
+```typescript
+const memory = await manager.create({
+  type: 'user_preference',
+  content: 'User prefers dark mode in the editor',
+  metadata: {
+    source: 'explicit',
+    importance: 'high',
+  },
+  sessionId: 'session-123',
+});
+```
+
+#### search(query: string, topK?: number): Promise<MemorySearchResult[]>
+
+基于查询文本检索相关记忆。
 
 #### update(memoryId: string, newContent: string): Promise<boolean>
 
@@ -254,7 +353,7 @@ interface MemoryStats {
 
 #### extractAndStore(userMessage: string, aiResponse: string, sessionId?: string): Promise<MemoryExtractionResult>
 
-从对话中提取并存储记忆（通常由 Controller 自动调用）。
+从对话中提取并存储记忆。
 
 ```typescript
 const result = await manager.extractAndStore(
@@ -264,45 +363,61 @@ const result = await manager.extractAndStore(
 );
 ```
 
-### VectorDatabaseClient
+### MemoryExtractor
 
-底层向量数据库客户端，通常不直接使用，而是通过 LongTermMemoryManager 操作。
+记忆提取器，从对话中提取潜在记忆。
 
-#### initialize(): Promise<boolean>
-
-初始化数据库连接。
+#### 构造函数
 
 ```typescript
-const dbClient = new VectorDatabaseClient(config);
-const connected = await dbClient.initialize();
+constructor(
+  llm: ChatOpenAI,
+  config?: Partial<MemoryExtractorConfig>
+)
 ```
 
-#### generateEmbedding(text: string): Promise<number[] | null>
-
-生成文本的向量表示。
+**MemoryExtractorConfig 接口：**
 
 ```typescript
-const embedding = await dbClient.generateEmbedding('这是一个测试文本');
-// 返回 1024 维向量数组
+interface MemoryExtractorConfig {
+  confidenceThreshold: number;
+  maxExtractionsPerTurn: number;
+  extractionPrompt?: string;
+}
 ```
 
-#### searchSimilar(queryEmbedding: number[], topK: number, filters?: SearchFilters): Promise<MemorySearchResult[]>
+#### extract(userMessage: string, aiResponse: string): Promise<MemoryExtractionResult>
 
-执行向量相似度搜索。
+从对话中提取记忆。
 
 ```typescript
-const results = await dbClient.searchSimilar(embedding, 5, {
-  type: 'user_preference',
-  sessionId: 'session-123',
-});
+const result = await extractor.extract(
+  '我是一名前端开发者',
+  '你好！很高兴认识你...'
+);
+
+// result.memories = [
+//   { type: 'fact', content: 'User is a frontend developer', confidence: 0.9 }
+// ]
 ```
 
-#### healthCheck(): Promise<boolean>
+### MemoryDispatcher
 
-检查数据库连接状态。
+记忆派发器，协调记忆存储流程。
+
+#### 构造函数
 
 ```typescript
-const isHealthy = await dbClient.healthCheck();
+constructor(config?: { enabled?: boolean })
+```
+
+#### dispatch(userMessage: string, aiResponse: string, sessionId?: string): Promise<void>
+
+派发记忆提取任务。
+
+```typescript
+const dispatcher = new MemoryDispatcher({ enabled: true });
+await dispatcher.dispatch('用户消息', 'AI 回复', 'session-123');
 ```
 
 ## 记忆类型
@@ -316,6 +431,40 @@ const isHealthy = await dbClient.healthCheck();
 | 经验     | `experience`      | 交互历史中的重要经验     | "Weather search tool returned good results last time" |
 | 任务     | `task`            | 待办或进行中的任务       | "User needs to deploy to production"                  |
 | 上下文   | `context`         | 当前对话的上下文信息     | "Currently discussing project architecture"           |
+
+## 记忆元数据结构
+
+```typescript
+interface MemoryMetadata {
+  sourceSessionId?: string;
+  confidence?: number;
+  tags?: string[];
+  [key: string]: unknown;
+}
+```
+
+## 记忆搜索结果
+
+```typescript
+interface MemorySearchResult {
+  memory: Memory;
+  similarity: number;
+}
+
+interface Memory {
+  id: string;
+  type: MemoryType;
+  content: string;
+  embedding?: number[];
+  metadata: MemoryMetadata;
+  sessionId?: string;
+  createdAt: Date;
+  lastAccessedAt: Date;
+  accessCount: number;
+  expiresAt?: Date;
+  isActive: boolean;
+}
+```
 
 ## 使用场景
 
@@ -350,45 +499,34 @@ await controller.execute('如何优化性能？');
 // Agent 会针对电商网站和 Next.js 提供优化建议
 ```
 
-### 4. 记住重要决策
-
-```typescript
-await controller.execute('我们决定使用 Supabase 作为后端数据库');
-
-// 后续对话
-await controller.execute('如何设计用户认证？');
-// Agent 会基于 Supabase 提供认证方案
-```
-
 ## 高级用法
 
-### 1. 手动管理记忆
+### 1. 手动检索记忆
+
+```typescript
+const reader = controller.longTermMemoryReader;
+
+if (reader) {
+  const results = await reader.search('查询内容', 5);
+  const context = reader.formatMemoriesForPrompt(results);
+}
+```
+
+### 2. 手动创建记忆
 
 ```typescript
 const manager = controller.getLongTermMemoryManager();
 
 if (manager) {
-  // 手动创建重要记忆
   await manager.create({
     type: 'fact',
     content: 'Project deadline is March 15, 2026',
     metadata: { priority: 'high' },
   });
-
-  // 搜索相关记忆
-  const results = await manager.search('deadline', 5);
-
-  // 更新记忆
-  if (results.length > 0) {
-    await manager.update(
-      results[0].memory.id,
-      'Project deadline extended to April 1, 2026'
-    );
-  }
 }
 ```
 
-### 2. 批量导入历史记忆
+### 3. 批量导入历史记忆
 
 ```typescript
 const manager = controller.getLongTermMemoryManager();
@@ -404,7 +542,7 @@ for (const mem of historicalMemories) {
 }
 ```
 
-### 3. 设置记忆过期时间
+### 4. 设置记忆过期时间
 
 ```typescript
 // 创建临时记忆，30天后过期
@@ -415,7 +553,7 @@ await manager.create({
 });
 ```
 
-### 4. 按类型检索记忆
+### 5. 按类型检索记忆
 
 ```typescript
 // 获取所有用户偏好
@@ -435,7 +573,7 @@ const tasks = await manager.getByType('task', 10);
 
 ```typescript
 new Controller(llm, toolRegistry, {
-  longTermMemoryTopK: 8, // 检索更多记忆
+  longTermMemoryTopK: 8,
 });
 ```
 
@@ -447,7 +585,7 @@ new Controller(llm, toolRegistry, {
 
 ```typescript
 new Controller(llm, toolRegistry, {
-  memoryExtractionThreshold: 0.8, // 更严格的提取
+  memoryExtractionThreshold: 0.8,
 });
 ```
 
@@ -460,7 +598,7 @@ new Controller(llm, toolRegistry, {
 });
 
 // 方式 2: 不提供向量数据库配置
-new Controller(llm, toolRegistry); // 长期记忆功能不启用
+new Controller(llm, toolRegistry);
 ```
 
 ## 故障排查
@@ -472,20 +610,25 @@ new Controller(llm, toolRegistry); // 长期记忆功能不启用
 1. 置信度低于阈值
 2. 提取过程失败
 3. 向量数据库连接失败
+4. Worker 未运行或队列未被消费
 
 **解决方法：**
 
 ```typescript
-// 检查管理器状态
-const manager = controller.getLongTermMemoryManager();
-if (!manager) {
-  console.log('长期记忆管理器未初始化');
+// 检查读取器状态
+if (!controller.longTermMemoryReader) {
+  console.log('长期记忆读取器未初始化');
 }
 
-// 手动提取测试
-const result = await manager.extractAndStore('测试消息', '测试响应');
-console.log('提取结果:', result);
+// 手动测试检索
+const results = await controller.longTermMemoryReader.search('测试');
+console.log('检索结果:', results);
 ```
+
+**排查建议：**
+
+- 查看 `memory-worker.log` 是否有消费日志
+- 检查 `~/.mini-agent/memory-queue` 是否有积压任务
 
 ### 记忆检索不到
 
@@ -499,10 +642,10 @@ console.log('提取结果:', result);
 
 ```typescript
 // 增加 topK 值
-const results = await manager.search('查询内容', 20);
+const results = await reader.search('查询内容', 20);
 
 // 检查数据库连接
-const dbClient = manager.getDbClient();
+const dbClient = await reader.getDbClient();
 const isHealthy = await dbClient.healthCheck();
 ```
 

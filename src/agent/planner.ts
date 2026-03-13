@@ -74,6 +74,14 @@ export class Planner {
         enabledTools
       );
       if (llmPlan) {
+        // 若 LLM 判断不需要工具，但规则认为需要，则强制进入兜底
+        if (!llmPlan.needsTool && this.shouldUseTool(prompt)) {
+          return this.ruleBasedFallback(
+            prompt,
+            enabledTools,
+            conversationHistory
+          );
+        }
         return llmPlan;
       }
     } catch {
@@ -81,16 +89,13 @@ export class Planner {
     }
 
     // 规则兜底
-    return this.ruleBasedFallback(prompt, enabledTools);
+    return this.ruleBasedFallback(prompt, enabledTools, conversationHistory);
   }
 
   /**
    * 判断是否需要使用工具
    */
-  shouldUseTool(
-    prompt: string,
-    conversationHistory: ConversationMessage[]
-  ): boolean {
+  shouldUseTool(prompt: string): boolean {
     // 检查是否包含搜索关键词
     const lowerPrompt = prompt.toLowerCase();
     const hasSearchKeyword = SEARCH_KEYWORDS.some((keyword) =>
@@ -99,12 +104,6 @@ export class Planner {
 
     if (hasSearchKeyword) {
       return true;
-    }
-
-    // 检查对话历史中是否有工具调用
-    const hasToolHistory = conversationHistory.some((m) => m.role === 'tool');
-    if (hasToolHistory) {
-      return false; // 已经执行过工具，不需要再执行
     }
 
     return false;
@@ -209,9 +208,13 @@ export class Planner {
   /**
    * 基于规则的兜底规划
    */
-  private ruleBasedFallback(prompt: string, tools: ToolInfo[]): ExecutionPlan {
+  private ruleBasedFallback(
+    prompt: string,
+    tools: ToolInfo[],
+    _conversationHistory: ConversationMessage[]
+  ): ExecutionPlan {
     // 检查是否需要工具
-    if (!this.shouldUseTool(prompt, [])) {
+    if (!this.shouldUseTool(prompt)) {
       return {
         needsTool: false,
         toolCalls: [],

@@ -16,21 +16,21 @@
                 │                         │
                 ▼                         ▼
 ┌───────────────────────────┐  ┌──────────────────────────┐
-│  LongTermMemoryManager    │  │   SessionStore           │
-│  (长期记忆管理器)          │  │   (短期记忆 - 会话历史)    │
+│  LongTermMemoryReader    │  │   SessionStore           │
+│  (长期记忆读取器)        │  │   (短期记忆 - 会话历史)   │
 └───────┬───────────────────┘  └──────────────────────────┘
         │
         ├──────────────────────┬──────────────────────┐
         ▼                      ▼                      ▼
 ┌──────────────────┐  ┌─────────────────┐  ┌──────────────────┐
-│ VectorDatabase   │  │ MemoryExtractor │  │ Memory Merge &   │
-│ Client           │  │ (LLM 提取器)     │  │ Expiration       │
-│ (Supabase)       │  │                 │  │ Manager          │
+│ VectorDatabase   │  │ MemoryExtractor │  │ MemoryJobQueue   │
+│ Client           │  │ (LLM 提取器)    │  │ (持久化队列)     │
+│ (Supabase)       │  │                 │  │                  │
 └──────────────────┘  └─────────────────┘  └──────────────────┘
         │
         ▼
 ┌──────────────────────────────────────────────────────┐
-│           Supabase (PostgreSQL + pgvector)            │
+│           Supabase (PostgreSQL + pgvector)           │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │  memories 表                                     │ │
 │  │  - id, type, content, embedding, metadata       │ │
@@ -59,14 +59,14 @@
 
 - **连接池管理**：复用数据库连接，减少开销
 - **降级模式**：连接失败时自动降级，不影响主流程
-- **重试机制**：指数退避重试（最多 3 次）
-- **缓存机制**：缓存 embedding 结果，避免重复 API 调用
+- **重试机制**：连续失败 3 次后标记为失败状态
+- **缓存机制**：缓存 embedding 结果 1 小时，避免重复 API 调用
 
 ```typescript
 // 示例：初始化和搜索
 const dbClient = new VectorDatabaseClient({
   supabaseUrl: 'https://your-project.supabase.co',
-  supabaseKey: 'your-anon-key',
+  supabaseApiKey: 'your-anon-key',
   embeddingApiKey: 'your-dashscope-key',
 });
 
@@ -98,7 +98,11 @@ const results = await dbClient.searchSimilar(embedding, 5);
 
 ```typescript
 // 示例：提取记忆
-const extractor = new MemoryExtractor(llm);
+const extractor = new MemoryExtractor(llm, {
+  confidenceThreshold: 0.7,
+  maxExtractionsPerTurn: 3,
+});
+
 const result = await extractor.extract(
   '我是一名前端开发者',
   '你好！很高兴认识你，作为一名前端开发者...'
@@ -107,13 +111,44 @@ const result = await extractor.extract(
 // result.memories = [{ type: 'fact', content: 'User is a frontend developer', confidence: 0.9 }]
 ```
 
-#### 3. LongTermMemoryManager
+#### 3. LongTermMemoryReader
+
+**职责：**
+
+- 仅负责检索和格式化记忆
+- 不做提取和存储（分离关注点）
+- 提供记忆上下文格式化
+
+**核心功能：**
+
+| 功能     | 方法                        | 说明                       |
+| -------- | --------------------------- | -------------------------- |
+| 检索记忆 | `search(query, topK)`       | 基于向量相似度检索         |
+| 格式化   | `formatMemoriesForPrompt()` | 格式化为 prompt 注入上下文 |
+
+```typescript
+// 示例：检索记忆
+const reader = new LongTermMemoryReader(dbClient, {
+  enabled: true,
+  topK: 5,
+});
+
+const results = await reader.search('我喜欢的编程语言');
+const context = reader.formatMemoriesForPrompt(results);
+// 输出格式：
+// 以下是可能与当前对话相关的历史记忆：
+// 1. [用户偏好] 我喜欢 TypeScript (相关度: 95%)
+// 2. [事实] 用户是前端开发者 (相关度: 87%)
+```
+
+#### 4. LongTermMemoryManager
 
 **职责：**
 
 - 协调记忆的完整生命周期
 - 管理记忆合并和过期
 - 提供记忆检索接口
+- 管理持久化队列
 
 **核心功能：**
 
@@ -125,6 +160,22 @@ const result = await extractor.extract(
 | 删除记忆 | `delete(id)`             | 软删除（设置 is_active=false） |
 | 记忆合并 | `checkAndMergeSimilar()` | 自动合并相似度 > 0.95 的记忆   |
 | 过期管理 | `markExpiredMemories()`  | 标记过期记忆为 inactive        |
+
+#### 5. MemoryJobQueue
+
+**职责：**
+
+- 持久化记忆提取任务
+- 异步处理记忆存储
+- 失败重试机制
+- CLI 启动时自动拉起 Worker 消费队列，CLI 退出后 Worker 处理完队列再退出
+
+**配置选项：**
+
+- `queueDir`: 队列文件存储目录
+- `queueMaxAttempts`: 最大重试次数（默认 3）
+- `queueRetryBackoffMs`: 重试退避时间（默认 30 秒）
+- `queuePollIntervalMs`: 队列轮询间隔（默认 10 秒）
 
 ## 数据模型
 
@@ -169,7 +220,7 @@ WITH (lists = 100);
     ↓
 Controller.execute()
     ↓
-LongTermMemoryManager.search(query)
+LongTermMemoryReader.search(query)
     ↓
 VectorDatabaseClient.generateEmbedding(query)
     ↓
@@ -187,7 +238,9 @@ Supabase RPC: search_memories(embedding, topK)
 ```
 用户消息 + AI 回复
     ↓
-Controller.extractLongTermMemoryAsync()
+MemoryDispatcher 派发任务
+    ↓
+MemoryJobQueue 持久化任务（可选）
     ↓
 MemoryExtractor.extract(userMsg, aiResp)
     ↓
@@ -237,8 +290,8 @@ if (!this.isAvailable()) {
 ```typescript
 // Controller 中的降级处理
 try {
-  if (this.longTermMemoryManager) {
-    const memories = await this.longTermMemoryManager.search(prompt);
+  if (this.longTermMemoryReader) {
+    const memories = await this.longTermMemoryReader.search(prompt);
     // 使用记忆...
   }
 } catch (error) {
@@ -266,15 +319,17 @@ private async extractLongTermMemoryAsync(userMessage: string, aiResponse: string
 ### 1. Embedding 缓存
 
 ```typescript
-private embeddingCache = new Map<string, number[]>();
+private embeddingCache = new Map<string, EmbeddingCacheItem>();
 
 async generateEmbedding(text: string): Promise<number[]> {
   const cacheKey = this.hashText(text);
-  if (this.embeddingCache.has(cacheKey)) {
-    return this.embeddingCache.get(cacheKey)!;
+  const cached = this.embeddingCache.get(cacheKey);
+  // 1 小时内可复用
+  if (cached && Date.now() - cached.timestamp < this.cacheMaxAge) {
+    return cached.embedding;
   }
   // 调用 API...
-  this.embeddingCache.set(cacheKey, embedding);
+  this.embeddingCache.set(cacheKey, { embedding, timestamp: Date.now() });
   return embedding;
 }
 ```
@@ -297,6 +352,12 @@ async insertVectors(dataArray: CreateMemoryInput[]): Promise<Memory[]>
 - 为常用过滤字段创建 B-tree 索引（type, session_id, is_active）
 - 定期执行 `VACUUM` 和 `ANALYZE` 维护索引性能
 
+### 4. 持久化队列
+
+- 记忆提取任务异步处理，不阻塞主流程
+- 支持失败重试，确保数据不丢失
+- 可配置队列轮询间隔
+
 ## 监控与维护
 
 ### 关键指标
@@ -310,7 +371,7 @@ async insertVectors(dataArray: CreateMemoryInput[]): Promise<Memory[]>
 
 ### 维护任务
 
-1. **过期清理**：每小时自动执行 `cleanup_expired_memories()`
+1. **过期清理**：定时任务自动执行过期记忆清理
 2. **索引重建**：数据量增长后重建向量索引
 3. **备份策略**：启用 Supabase 自动备份
 
@@ -335,6 +396,30 @@ async insertVectors(dataArray: CreateMemoryInput[]): Promise<Memory[]>
 2. **Row Level Security**：启用 RLS 保护用户数据隔离
 3. **输入验证**：验证记忆类型和内容长度
 4. **SQL 注入防护**：使用参数化查询和 Supabase SDK
+
+## 文件结构
+
+```
+src/
+├── types/
+│   └── memory.ts                              # 记忆相关类型定义
+├── agent/
+│   ├── controller.ts                          # 主控制器
+│   └── memory/
+│       ├── index.ts                           # 导出入口
+│       ├── vector-database-client.ts          # 向量数据库客户端
+│       ├── memory-extractor.ts                # 记忆提取器
+│       ├── long-term-memory-manager.ts        # 长期记忆管理器
+│       ├── long-term-memory-reader.ts         # 长期记忆读取器
+│       ├── memory-dispatcher.ts               # 记忆派发器
+│       ├── memory-job-queue.ts                # 持久化队列
+│       ├── session-store.ts                   # 会话存储
+│       ├── cost-tracker.ts                    # 成本追踪
+│       ├── token-manager.ts                   # Token 管理
+│       └── *.test.ts                          # 测试文件
+sql/
+└── memories_schema.sql                        # 数据库表结构
+```
 
 ## 参考资料
 

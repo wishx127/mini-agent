@@ -144,6 +144,10 @@ export interface LongTermMemoryConfig {
   queueMaxAttempts?: number;
   /** 队列重试退避时间（毫秒） */
   queueRetryBackoffMs?: number;
+  /** 是否启用队列消费器 */
+  queueWorkerEnabled?: boolean;
+  /** 队列轮询间隔（毫秒） */
+  queuePollIntervalMs?: number;
 }
 
 /**
@@ -158,4 +162,6 @@ export const DEFAULT_LONG_TERM_MEMORY_CONFIG: LongTermMemoryConfig = {
   mergeSimilarityThreshold: 0.95,
   queueMaxAttempts: 3,
   queueRetryBackoffMs: 30_000,
+  queueWorkerEnabled: true,
+  queuePollIntervalMs: 5_000,
 };

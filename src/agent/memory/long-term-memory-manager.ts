@@ -42,6 +42,7 @@ export class LongTermMemoryManager {
   private queue: MemoryJobQueue;
   private queueWorkerRunning = false;
   private queueWorkerStopped = false;
+  private queuePoller: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     dbClient: VectorDatabaseClient,
@@ -58,6 +59,8 @@ export class LongTermMemoryManager {
       maxExtractionsPerTurn: this.config.maxExtractionsPerTurn,
       mergeSimilarityThreshold: this.config.mergeSimilarityThreshold,
       defaultExpirationMs: this.config.defaultExpirationMs,
+      queueWorkerEnabled: this.config.queueWorkerEnabled,
+      queuePollIntervalMs: this.config.queuePollIntervalMs,
     });
     this.extractor = new MemoryExtractor(llm, {
       confidenceThreshold: this.config.extractionThreshold,
@@ -79,7 +82,9 @@ export class LongTermMemoryManager {
       // 启动过期清理定时任务
       console.log('🔄 [LongTermMemoryManager] 启动过期清理定时任务...');
       this.startCleanupTask();
-      this.startQueueWorker();
+      if (this.config.queueWorkerEnabled) {
+        this.startQueueConsumer(this.config.queuePollIntervalMs);
+      }
       console.log('✓ [LongTermMemoryManager] 初始化完成');
     } else {
       console.error('❌ [LongTermMemoryManager] 数据库连接失败');
@@ -96,6 +101,11 @@ export class LongTermMemoryManager {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
       console.log('✓ [LongTermMemoryManager] 清理任务已停止');
+    }
+    if (this.queuePoller) {
+      clearInterval(this.queuePoller);
+      this.queuePoller = null;
+      console.log('✓ [LongTermMemoryManager] 队列轮询已停止');
     }
     this.queueWorkerStopped = true;
     this.dbClient.disconnect();
@@ -156,7 +166,6 @@ export class LongTermMemoryManager {
       return;
     }
     await this.queue.enqueue({ userMessage, aiResponse, sessionId });
-    this.startQueueWorker();
   }
 
   /**
@@ -447,6 +456,20 @@ export class LongTermMemoryManager {
     void this.runQueueWorker();
   }
 
+  /**
+   * 启动队列消费器（定时拉起队列处理）
+   */
+  startQueueConsumer(pollIntervalMs?: number): void {
+    if (this.queuePoller) {
+      return;
+    }
+    const interval = pollIntervalMs ?? this.config.queuePollIntervalMs ?? 2000;
+    this.startQueueWorker();
+    this.queuePoller = setInterval(() => {
+      this.startQueueWorker();
+    }, interval);
+  }
+
   private async runQueueWorker(): Promise<void> {
     try {
       while (!this.queueWorkerStopped) {
@@ -461,12 +484,17 @@ export class LongTermMemoryManager {
 
         for (const job of jobs) {
           try {
+            const startedAt = Date.now();
             await this.extractAndStore(
               job.userMessage,
               job.aiResponse,
               job.sessionId
             );
             await this.queue.ack(job);
+            const elapsedMs = Date.now() - startedAt;
+            console.log(
+              `✅ [LongTermMemoryManager] 队列任务完成: ${job.id} (${elapsedMs}ms)`
+            );
           } catch (error) {
             console.warn('⚠️ [LongTermMemoryManager] 队列任务处理失败:', error);
             await this.queue.retryOrFail(
@@ -481,6 +509,10 @@ export class LongTermMemoryManager {
     } finally {
       this.queueWorkerRunning = false;
     }
+  }
+
+  async getPendingJobCount(): Promise<number> {
+    return this.queue.getPendingCount();
   }
 
   /**

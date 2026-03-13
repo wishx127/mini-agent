@@ -12,5 +12,7 @@ export type { TokenUsage, CostRecord, CostSummary } from './types.js';
 export { VectorDatabaseClient } from './vector-database-client.js';
 export { MemoryExtractor } from './memory-extractor.js';
 export { LongTermMemoryManager } from './long-term-memory-manager.js';
+export { LongTermMemoryReader } from './long-term-memory-reader.js';
+export { MemoryDispatcher } from './memory-dispatcher.js';
 export type { MemoryExtractorConfig } from './memory-extractor.js';
 export type { MemoryStats } from './long-term-memory-manager.js';

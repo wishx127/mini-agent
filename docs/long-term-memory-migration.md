@@ -100,7 +100,6 @@ SUPABASE_API_KEY=your-supabase-anon-key
 EMBEDDING_API_KEY=your-dashscope-api-key
 
 # 长期记忆配置（可选）
-LONG_TERM_MEMORY_ENABLED=true
 LONG_TERM_MEMORY_TOP_K=5
 MEMORY_EXTRACTION_THRESHOLD=0.7
 ```
@@ -128,11 +127,10 @@ const toolRegistry = new ToolRegistry();
 const controller = new Controller(
   llm,
   toolRegistry,
-  { enableLongTermMemory: true }, // 配置项
+  { enableLongTermMemory: true },
   {
-    // 向量数据库配置
     supabaseUrl: process.env.SUPABASE_URL!,
-    supabaseKey: process.env.SUPABASE_API_KEY!,
+    supabaseApiKey: process.env.SUPABASE_API_KEY!,
     embeddingApiKey: process.env.EMBEDDING_API_KEY!,
   }
 );
@@ -194,7 +192,7 @@ const controller = new Controller(
   },
   {
     supabaseUrl: process.env.SUPABASE_URL!,
-    supabaseKey: process.env.SUPABASE_API_KEY!,
+    supabaseApiKey: process.env.SUPABASE_API_KEY!,
     embeddingApiKey: process.env.EMBEDDING_API_KEY!,
   }
 );
@@ -228,7 +226,7 @@ function createController(userId: string, userConfig: UserConfig) {
     userConfig.hasLongTermMemory
       ? {
           supabaseUrl: process.env.SUPABASE_URL!,
-          supabaseKey: process.env.SUPABASE_API_KEY!,
+          supabaseApiKey: process.env.SUPABASE_API_KEY!,
           embeddingApiKey: process.env.EMBEDDING_API_KEY!,
         }
       : undefined
@@ -257,7 +255,7 @@ constructor(
   llm: ChatOpenAI,
   toolRegistry: ToolRegistry,
   config?: Partial<ControlConfig>,
-  vectorDbConfig?: VectorDatabaseConfig  // 新增参数
+  vectorDbConfig?: VectorDatabaseConfig
 )
 ```
 
@@ -280,13 +278,10 @@ interface ControlConfig {
 
 ```typescript
 interface ControlConfig {
-  // 原有配置
   maxTokens: number;
   maxIterations: number;
   timeout: number;
   tokenThreshold: number;
-
-  // 新增配置
   enableLongTermMemory?: boolean;
   longTermMemoryTopK?: number;
   memoryExtractionThreshold?: number;
@@ -314,13 +309,19 @@ src/
 ├── types/
 │   └── memory.ts                              # 记忆相关类型定义
 ├── agent/
+│   ├── controller.ts                          # 主控制器（更新）
 │   └── memory/
+│       ├── index.ts                           # 导出入口
 │       ├── vector-database-client.ts          # 向量数据库客户端
 │       ├── memory-extractor.ts                # 记忆提取器
 │       ├── long-term-memory-manager.ts        # 长期记忆管理器
-│       ├── vector-database-client.test.ts     # 测试文件
-│       ├── memory-extractor.test.ts           # 测试文件
-│       └── long-term-memory-manager.test.ts   # 测试文件
+│       ├── long-term-memory-reader.ts         # 长期记忆读取器
+│       ├── memory-dispatcher.ts               # 记忆派发器
+│       ├── memory-job-queue.ts               # 持久化队列
+│       ├── session-store.ts                   # 会话存储
+│       ├── cost-tracker.ts                    # 成本追踪
+│       ├── token-manager.ts                   # Token 管理
+│       └── *.test.ts                          # 测试文件
 sql/
 └── memories_schema.sql                        # 数据库表结构
 docs/
@@ -328,6 +329,43 @@ docs/
 ├── long-term-memory-api.md                    # API 文档
 ├── long-term-memory-configuration.md          # 配置文档
 └── long-term-memory-migration.md              # 本迁移文档
+```
+
+## 新增组件说明
+
+### LongTermMemoryReader
+
+负责记忆检索和格式化，不执行存储操作。Controller 直接使用此组件进行记忆检索。
+
+```typescript
+// 检索记忆
+const reader = new LongTermMemoryReader(dbClient, {
+  enabled: true,
+  topK: 5,
+});
+
+const results = await reader.search('查询内容');
+const context = reader.formatMemoriesForPrompt(results);
+```
+
+### MemoryDispatcher
+
+协调记忆提取任务的派发。
+
+```typescript
+const dispatcher = new MemoryDispatcher({ enabled: true });
+await dispatcher.dispatch('用户消息', 'AI 回复', 'session-123');
+```
+
+### MemoryJobQueue
+
+持久化队列，用于异步处理记忆存储任务，支持失败重试。
+
+```typescript
+const queue = new MemoryJobQueue('/path/to/queue');
+await queue.enqueue({ userMessage, aiResponse, sessionId });
+const jobs = await queue.take(1);
+await queue.ack(job);
 ```
 
 ## 回滚方案
@@ -380,7 +418,7 @@ const controller = new Controller(llm, toolRegistry, {
 **A:** 影响很小：
 
 - 记忆检索：~50-200ms（取决于网络和数据库）
-- 记忆提取：异步执行，不阻塞响应
+- 记忆提取：异步执行，通过队列处理，不阻塞响应
 - 可通过配置调整检索数量优化
 
 ### Q3: 可以只对部分对话启用长期记忆吗？
@@ -420,11 +458,27 @@ if (manager) {
 }
 ```
 
+此外，CLI 模式下 Worker 会将消费日志写入 `memory-worker.log`，可用于排查队列是否在消费。
+
+### Q6: 队列任务失败怎么办？
+
+**A:** MemoryJobQueue 内置重试机制：
+
+- 默认最大重试次数：3
+- 重试间隔：30 秒（指数退避）
+- 超过最大重试次数后，任务标记为失败
+
+可以查看队列目录中的失败任务文件进行手动处理：
+
+```bash
+ls ~/.mini-agent/memory-queue/
+```
+
 ## 迁移检查清单
 
 - [ ] 已安装 `@supabase/supabase-js` 依赖
 - [ ] 已创建 Supabase 项目
-- [ ] 已执行 `sql/memories_schema.sql` 创建表结构
+- [ ] 已执行数据库脚本创建表结构
 - [ ] 已获取 DashScope API Key
 - [ ] 已更新 `.env` 文件
 - [ ] 已更新 Controller 初始化代码

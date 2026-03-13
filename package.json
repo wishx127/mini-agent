@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "mini-agent": "dist/index.js"
+    "mini-agent": "dist/index.js",
+    "memory-consumer-worker": "dist/worker/memory-consumer.js"
   },
   "scripts": {
     "build": "tsc",
@@ -55,6 +56,7 @@
     ]
   },
   "devDependencies": {
+    "concurrently": "^8.2.2",
     "@eslint/compat": "^2.0.2",
     "@eslint/js": "^9.39.3",
     "@types/node": "^25.3.1",
