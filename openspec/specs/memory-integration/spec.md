@@ -1,6 +1,6 @@
 ## 需求：Controller 构建 RunnableWithMessageHistory 链
 
-Controller 必须在初始化时构建基于 `RunnableWithMessageHistory` 的 Runnable 链，完全替代手动消息数组管理。
+Controller 必须在初始化时构建基于 `RunnableWithMessageHistory` 的 Runnable 链，完全替代手动消息数组管理，并集成长期记忆检索。
 
 ### 场景：构建完整 Runnable 链
 
@@ -12,6 +12,12 @@ Controller 必须在初始化时构建基于 `RunnableWithMessageHistory` 的 Ru
 - **当** 构建 prompt 模板时
 - **那么** 必须包含 `MessagesPlaceholder('history')` 以注入历史消息，顺序为：system → history → human
 
+### 场景：ChatPromptTemplate 包含长期记忆占位符
+
+- **当** 构建 prompt 模板时
+- **那么** 必须包含 `MessagesPlaceholder('long_term_memory')` 以注入长期记忆
+- **且** 顺序必须为：system → long_term_memory → history → human
+
 ### 场景：getMessageHistory 关联 SessionStore
 
 - **当** `RunnableWithMessageHistory` 需要获取历史时
@@ -21,12 +27,24 @@ Controller 必须在初始化时构建基于 `RunnableWithMessageHistory` 的 Ru
 
 ## 需求：`execute()` 通过 Runnable 链调用 LLM
 
-Controller 的 `execute(prompt)` 方法必须通过 `chainWithHistory.invoke()` 完成请求，不再手动构建消息数组。
+Controller 的 `execute(prompt)` 方法必须通过 `chainWithHistory.invoke()` 完成请求，并在调用前检索长期记忆。
 
 ### 场景：正常调用链执行
 
 - **当** 调用 `execute(prompt)` 时
 - **那么** 必须调用 `chainWithHistory.invoke({ input: prompt }, { configurable: { sessionId } })`
+
+### 场景：长期记忆检索
+
+- **当** 调用 `execute(prompt)` 时
+- **那么** 必须先调用 `longTermMemoryManager.search(prompt, topK)` 检索相关长期记忆
+- **且** 检索结果必须作为 `long_term_memory` 字段传入 invoke
+
+### 场景：长期记忆检索失败降级
+
+- **当** 长期记忆检索失败时
+- **那么** 必须记录错误日志但不抛出异常
+- **且** 必须使用空数组作为 `long_term_memory` 继续执行
 
 ### 场景：历史自动写入
 
@@ -42,6 +60,44 @@ Controller 的 `execute(prompt)` 方法必须通过 `chainWithHistory.invoke()` 
 
 - **当** `prompt` 为空字符串或纯空白时
 - **那么** 必须在调用链之前提前返回错误信息 `'输入不能为空'`，不触发 LLM 调用
+
+---
+
+## 需求：记忆闭环完整性
+
+Controller 的 `execute()` 必须实现完整的六步记忆闭环。
+
+### 场景：长期记忆检索
+
+- **当** `execute(prompt)` 被调用时
+- **那么** 必须先调用 `longTermMemoryManager.search(prompt)` 检索长期记忆
+
+### 场景：短期记忆拼接
+
+- **当** `execute(prompt)` 被调用时
+- **那么** 必须从 `SessionStore` 加载该 `sessionId` 的历史消息，作为上下文一部分传入 LLM
+
+### 场景：工具调用结果注入上下文
+
+- **当** Executor 执行工具返回 `ToolMessage` 时
+- **那么** 工具结果必须注入当前 LLM 调用的上下文，而不是丢弃
+
+### 场景：提取长期记忆
+
+- **当** `execute(prompt)` 完成且 LLM 返回回复后
+- **那么** 必须调用 `memoryExtractor.extract(prompt, response)` 提取潜在记忆
+- **且** 提取的记忆必须调用 `longTermMemoryManager.create()` 存储
+
+### 场景：记忆提取失败降级
+
+- **当** 记忆提取失败时
+- **那么** 必须记录错误日志但不抛出异常
+- **且** 不影响短期记忆的正常写入
+
+### 场景：完整闭环顺序
+
+- **当** `execute(prompt)` 完成一次完整调用后
+- **那么** 执行顺序必须为：长期记忆检索 → 短期记忆拼接 → Token 预检 → 工具调用结果注入 → 生成回复 → 提取长期记忆 → 写入长期记忆 → 写入短期记忆
 
 ---
 
@@ -77,27 +133,6 @@ Controller 的工具调用流程必须与 `RunnableWithMessageHistory` 协同工
 
 ---
 
-## 需求：记忆闭环完整性
-
-Controller 的 `execute()` 必须实现完整的五步记忆闭环。
-
-### 场景：短期记忆拼接
-
-- **当** `execute(prompt)` 被调用时
-- **那么** 必须先从 `SessionStore` 加载该 `sessionId` 的历史消息，作为上下文一部分传入 LLM
-
-### 场景：工具调用结果注入上下文
-
-- **当** Executor 执行工具返回 `ToolMessage` 时
-- **那么** 工具结果必须注入当前 LLM 调用的上下文，而不是丢弃
-
-### 场景：完整闭环顺序
-
-- **当** `execute(prompt)` 完成一次完整调用后
-- **那么** 执行顺序必须为：短期记忆拼接 → Token 预检 → 工具调用结果注入 → 生成回复 → 写入短期记忆
-
----
-
 ## 需求：usage 真实消耗记录
 
 ### 场景：从 LLM 响应 usage 记录消耗
@@ -111,6 +146,33 @@ Controller 的 `execute()` 必须实现完整的五步记忆闭环。
 - **当** `CostTracker.getSummary()` 被调用时
 - **那么** `totalCost` 字段必须为 `0`（成本单价换算暂不实现）
 - **但** `totalTokens`、`requestCount` 等 token 统计字段必须正确累加
+
+---
+
+## 需求：长期记忆配置
+
+Controller 必须支持长期记忆的配置选项。
+
+### 场景：启用长期记忆
+
+- **当** 配置 `enableLongTermMemory: true` 时
+- **那么** Controller 必须注入 `LongTermMemoryManager` 并在 execute 流程中启用长期记忆
+
+### 场景：禁用长期记忆
+
+- **当** 配置 `enableLongTermMemory: false` 时
+- **那么** Controller 必须跳过长期记忆检索和提取步骤
+- **且** 必须退化为纯短期记忆模式
+
+### 场景：配置 topK 参数
+
+- **当** 配置 `longTermMemoryTopK: 10` 时
+- **那么** 长期记忆检索必须返回 top 10 条最相关记忆
+
+### 场景：配置提取阈值
+
+- **当** 配置 `memoryExtractionThreshold: 0.8` 时
+- **那么** 只有置信度 >= 0.8 的记忆才会被存储
 
 ---
 
