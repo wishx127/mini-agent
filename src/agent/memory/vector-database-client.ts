@@ -101,18 +101,14 @@ export class VectorDatabaseClient {
 
       if (error && error.code !== 'PGRST116') {
         // PGRST116 = no rows returned, which is fine
-        console.error('❌ [VectorDatabaseClient] 连接失败:', error.message);
         this.state = 'failed';
         return false;
       }
 
       this.state = 'connected';
       this.consecutiveFailures = 0;
-      console.log('✓ [VectorDatabaseClient] 连接成功');
       return true;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error('❌ [VectorDatabaseClient] 初始化错误:', errorMessage);
+    } catch {
       this.state = 'failed';
       return false;
     }
@@ -122,14 +118,9 @@ export class VectorDatabaseClient {
    * 断开连接
    */
   disconnect(): void {
-    console.log('🔌 [VectorDatabaseClient] 断开连接...');
     this.client = null;
     this.state = 'disconnected';
-    const cacheSize = this.embeddingCache.size;
     this.embeddingCache.clear();
-    console.log(
-      `✓ [VectorDatabaseClient] 已断开连接，清理了 ${cacheSize} 个缓存项`
-    );
   }
 
   /**
@@ -165,7 +156,6 @@ export class VectorDatabaseClient {
       if (healthy && this.state === 'degraded') {
         this.state = 'connected';
         this.consecutiveFailures = 0;
-        console.log('✓ [VectorDatabaseClient] 从降级模式恢复');
       }
 
       return healthy;
@@ -193,27 +183,11 @@ export class VectorDatabaseClient {
    * 批量生成 embedding
    */
   async generateEmbeddings(texts: string[]): Promise<(number[] | null)[]> {
-    console.log(
-      `🔄 [VectorDatabaseClient] 批量生成 Embedding，数量: ${texts.length}`
-    );
-
     if (!this.config.embeddingApiKey) {
-      console.warn(
-        '⚠️ [VectorDatabaseClient] 未配置 embedding API Key，跳过向量生成'
-      );
       return texts.map(() => null);
     }
 
     try {
-      console.log('📤 [VectorDatabaseClient] 调用 Embedding API...');
-      console.log('📋 [VectorDatabaseClient] API 参数:', {
-        url: `${this.config.embeddingApiUrl}/embeddings`,
-        model: this.config.embeddingModel,
-        dimensions: this.config.embeddingDimension,
-        inputCount: texts.length,
-      });
-
-      const startTime = Date.now();
       const response = await this.retryOperation(async () => {
         const res = await fetch(`${this.config.embeddingApiUrl}/embeddings`, {
           method: 'POST',
@@ -234,16 +208,11 @@ export class VectorDatabaseClient {
 
         return res.json();
       });
-      const duration = Date.now() - startTime;
-      console.log(`✓ [VectorDatabaseClient] API 调用成功，耗时: ${duration}ms`);
 
       const embeddings: (number[] | null)[] = texts.map(() => null);
 
       const typedResponse = response as EmbeddingResponse;
       if (typedResponse.data && Array.isArray(typedResponse.data)) {
-        console.log(
-          `📊 [VectorDatabaseClient] 收到 ${typedResponse.data.length} 个 Embedding 结果`
-        );
         for (const item of typedResponse.data) {
           embeddings[item.index] = item.embedding;
           // 缓存结果
@@ -253,18 +222,10 @@ export class VectorDatabaseClient {
             timestamp: Date.now(),
           });
         }
-        console.log(
-          `✓ [VectorDatabaseClient] 已缓存 ${typedResponse.data.length} 个 Embedding`
-        );
       }
 
       return embeddings;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error(
-        '❌ [VectorDatabaseClient] Embedding 生成失败:',
-        errorMessage
-      );
+    } catch {
       return texts.map(() => null);
     }
   }
@@ -273,29 +234,11 @@ export class VectorDatabaseClient {
    * 插入单条向量记录
    */
   async insertVector(input: CreateMemoryInput): Promise<Memory | null> {
-    console.log('📥 [VectorDatabaseClient] 开始插入向量记录...');
-    console.log('📋 [VectorDatabaseClient] 输入数据:', {
-      type: input.type,
-      content:
-        input.content.substring(0, 50) +
-        (input.content.length > 50 ? '...' : ''),
-      sessionId: input.sessionId,
-      hasMetadata: !!input.metadata,
-      hasExpiresAt: !!input.expiresAt,
-    });
-
     if (!this.client || !this.isAvailable()) {
-      console.warn('⚠️ [VectorDatabaseClient] 客户端不可用，无法插入');
       return null;
     }
 
-    console.log('🔄 [VectorDatabaseClient] 为内容生成 Embedding...');
     const embedding = await this.generateEmbedding(input.content);
-    if (!embedding) {
-      console.warn(
-        '⚠️ [VectorDatabaseClient] Embedding 生成失败，但继续插入（无向量）'
-      );
-    }
 
     const record = {
       id: crypto.randomUUID(),
@@ -310,33 +253,21 @@ export class VectorDatabaseClient {
       expires_at: input.expiresAt?.toISOString(),
       is_active: true,
     };
-    console.log('📝 [VectorDatabaseClient] 构建记录完成，ID:', record.id);
 
     try {
-      console.log(
-        `📤 [VectorDatabaseClient] 执行数据库插入，表: ${this.config.tableName}...`
-      );
       const { error } = await this.client
         .from(this.config.tableName!)
         .insert(record);
 
       if (error) {
         this.handleFailure();
-        console.error('❌ [VectorDatabaseClient] 插入失败:', {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-        });
         return null;
       }
 
       this.handleSuccess();
-      console.log('✓ [VectorDatabaseClient] 插入成功，记录 ID:', record.id);
       return this.recordToMemory(record);
-    } catch (error) {
+    } catch {
       this.handleFailure();
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error('❌ [VectorDatabaseClient] 插入异常:', errorMessage);
       return null;
     }
   }
@@ -345,25 +276,13 @@ export class VectorDatabaseClient {
    * 批量插入向量
    */
   async insertVectors(inputs: CreateMemoryInput[]): Promise<Memory[]> {
-    console.log(
-      `📥 [VectorDatabaseClient] 开始批量插入向量，数量: ${inputs.length}`
-    );
-
     if (!this.client || !this.isAvailable() || inputs.length === 0) {
-      console.warn(
-        '⚠️ [VectorDatabaseClient] 客户端不可用或输入为空，无法插入'
-      );
       return [];
     }
 
     // 批量生成 embedding
-    console.log('🔄 [VectorDatabaseClient] 批量生成 Embedding...');
     const contents = inputs.map((i) => i.content);
     const embeddings = await this.generateEmbeddings(contents);
-    const successCount = embeddings.filter((e) => e !== null).length;
-    console.log(
-      `📊 [VectorDatabaseClient] Embedding 生成完成: ${successCount}/${inputs.length} 成功`
-    );
 
     const records = inputs.map((input, index) => ({
       id: crypto.randomUUID(),
@@ -378,35 +297,21 @@ export class VectorDatabaseClient {
       expires_at: input.expiresAt?.toISOString(),
       is_active: true,
     }));
-    console.log(`📝 [VectorDatabaseClient] 构建了 ${records.length} 条记录`);
 
     try {
-      console.log(
-        `📤 [VectorDatabaseClient] 执行批量插入，表: ${this.config.tableName}...`
-      );
       const { error } = await this.client
         .from(this.config.tableName!)
         .insert(records);
 
       if (error) {
         this.handleFailure();
-        console.error('❌ [VectorDatabaseClient] 批量插入失败:', {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-        });
         return [];
       }
 
       this.handleSuccess();
-      console.log(
-        `✓ [VectorDatabaseClient] 批量插入成功，数量: ${records.length}`
-      );
       return records.map((r) => this.recordToMemory(r));
-    } catch (error) {
+    } catch {
       this.handleFailure();
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error('❌ [VectorDatabaseClient] 批量插入异常:', errorMessage);
       return [];
     }
   }
@@ -419,21 +324,12 @@ export class VectorDatabaseClient {
     topK: number = 5,
     filters?: { type?: string; sessionId?: string }
   ): Promise<MemorySearchResult[]> {
-    console.log('🔍 [VectorDatabaseClient] 开始向量相似度检索...');
-    console.log('📋 [VectorDatabaseClient] 检索参数:', {
-      topK,
-      filters,
-      embeddingDimension: queryEmbedding.length,
-    });
-
     if (!this.client || !this.isAvailable()) {
-      console.warn('⚠️ [VectorDatabaseClient] 客户端不可用，无法检索');
       return [];
     }
 
     try {
       // 构建 RPC 调用进行向量搜索
-      console.log('📤 [VectorDatabaseClient] 调用 RPC 函数 search_memories...');
       const query = this.client.rpc('search_memories', {
         query_embedding: queryEmbedding,
         match_count: topK,
@@ -468,9 +364,6 @@ export class VectorDatabaseClient {
       if (error) {
         // 如果 RPC 不存在，尝试直接查询
         if (error.code === 'PGRST202') {
-          console.warn(
-            '⚠️ [VectorDatabaseClient] RPC 函数 search_memories 不存在，使用备用检索方法'
-          );
           return await this.searchSimilarFallback(
             queryEmbedding,
             topK,
@@ -478,10 +371,6 @@ export class VectorDatabaseClient {
           );
         }
         this.handleFailure();
-        console.error('❌ [VectorDatabaseClient] 检索失败:', {
-          code: error.code,
-          message: error.message,
-        });
         return [];
       }
 
@@ -492,25 +381,9 @@ export class VectorDatabaseClient {
         memory: this.recordToMemory(item as unknown as Record<string, unknown>),
         similarity: item.similarity,
       }));
-      console.log(
-        `✓ [VectorDatabaseClient] 检索成功，返回 ${results.length} 条结果`
-      );
-      if (results.length > 0) {
-        console.log(
-          '📊 [VectorDatabaseClient] 检索结果:',
-          results.map((r) => ({
-            id: r.memory.id,
-            type: r.memory.type,
-            similarity: r.similarity.toFixed(3),
-            content: r.memory.content.substring(0, 30) + '...',
-          }))
-        );
-      }
       return results;
-    } catch (error) {
+    } catch {
       this.handleFailure();
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error('❌ [VectorDatabaseClient] 检索异常:', errorMessage);
       return [];
     }
   }
@@ -523,9 +396,6 @@ export class VectorDatabaseClient {
     topK: number,
     filters?: { type?: string; sessionId?: string }
   ): Promise<MemorySearchResult[]> {
-    console.log(
-      '🔄 [VectorDatabaseClient] 使用备用检索方法（内存计算相似度）...'
-    );
     if (!this.client) return [];
 
     let query = this.client
@@ -535,25 +405,17 @@ export class VectorDatabaseClient {
       .limit(topK);
 
     if (filters?.type) {
-      console.log(`📋 [VectorDatabaseClient] 应用类型过滤器: ${filters.type}`);
       query = query.eq('type', filters.type);
     }
     if (filters?.sessionId) {
-      console.log(
-        `📋 [VectorDatabaseClient] 应用会话过滤器: ${filters.sessionId}`
-      );
       query = query.eq('session_id', filters.sessionId);
     }
 
-    console.log('📤 [VectorDatabaseClient] 执行数据库查询...');
     const { data, error } = await query;
 
     if (error || !data) {
-      console.error('❌ [VectorDatabaseClient] 备用查询失败:', error?.message);
       return [];
     }
-
-    console.log(`📊 [VectorDatabaseClient] 查询返回 ${data.length} 条记录`);
 
     // 定义数据库记录类型
     interface DbMemoryRecord {
@@ -571,7 +433,6 @@ export class VectorDatabaseClient {
     }
 
     // 在内存中计算相似度
-    console.log('🔄 [VectorDatabaseClient] 在内存中计算向量相似度...');
     const typedData = data as DbMemoryRecord[];
     const results: MemorySearchResult[] = typedData
       .filter((item) => item.embedding)
@@ -585,9 +446,6 @@ export class VectorDatabaseClient {
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, topK);
 
-    console.log(
-      `✓ [VectorDatabaseClient] 备用检索完成，返回 ${results.length} 条结果`
-    );
     return results;
   }
 
@@ -600,28 +458,13 @@ export class VectorDatabaseClient {
       Pick<Memory, 'content' | 'metadata' | 'expiresAt' | 'isActive'>
     >
   ): Promise<boolean> {
-    console.log('🔄 [VectorDatabaseClient] 开始更新向量记录...');
-    console.log('📋 [VectorDatabaseClient] 更新参数:', {
-      id,
-      updates: {
-        hasContent: !!updates.content,
-        hasMetadata: !!updates.metadata,
-        hasExpiresAt: !!updates.expiresAt,
-        isActive: updates.isActive,
-      },
-    });
-
     if (!this.client || !this.isAvailable()) {
-      console.warn('⚠️ [VectorDatabaseClient] 客户端不可用，无法更新');
       return false;
     }
 
     const updateData: Record<string, unknown> = {};
 
     if (updates.content) {
-      console.log(
-        '🔄 [VectorDatabaseClient] 内容有更新，重新生成 Embedding...'
-      );
       updateData.content = updates.content;
       updateData.embedding = await this.generateEmbedding(updates.content);
     }
@@ -636,7 +479,6 @@ export class VectorDatabaseClient {
     }
 
     try {
-      console.log(`📤 [VectorDatabaseClient] 执行数据库更新，ID: ${id}...`);
       const { error } = await this.client
         .from(this.config.tableName!)
         .update(updateData)
@@ -644,22 +486,13 @@ export class VectorDatabaseClient {
 
       if (error) {
         this.handleFailure();
-        console.error('❌ [VectorDatabaseClient] 更新失败:', {
-          code: error.code,
-          message: error.message,
-        });
         return false;
       }
 
       this.handleSuccess();
-      console.log('✓ [VectorDatabaseClient] 更新成功，ID:', id);
       return true;
-    } catch (error) {
+    } catch {
       this.handleFailure();
-      console.error(
-        '❌ [VectorDatabaseClient] 更新异常:',
-        error instanceof Error ? error.message : '未知错误'
-      );
       return false;
     }
   }
@@ -668,7 +501,6 @@ export class VectorDatabaseClient {
    * 软删除向量记录
    */
   async deleteVector(id: string): Promise<boolean> {
-    console.log('🗑️ [VectorDatabaseClient] 软删除向量记录，ID:', id);
     return this.updateVector(id, { isActive: false });
   }
 
@@ -676,15 +508,11 @@ export class VectorDatabaseClient {
    * 永久删除向量记录
    */
   async hardDeleteVector(id: string): Promise<boolean> {
-    console.log('🗑️ [VectorDatabaseClient] 永久删除向量记录，ID:', id);
-
     if (!this.client || !this.isAvailable()) {
-      console.warn('⚠️ [VectorDatabaseClient] 客户端不可用，无法删除');
       return false;
     }
 
     try {
-      console.log(`📤 [VectorDatabaseClient] 执行永久删除，ID: ${id}...`);
       const { error } = await this.client
         .from(this.config.tableName!)
         .delete()
@@ -692,19 +520,13 @@ export class VectorDatabaseClient {
 
       if (error) {
         this.handleFailure();
-        console.error('❌ [VectorDatabaseClient] 删除失败:', {
-          code: error.code,
-          message: error.message,
-        });
         return false;
       }
 
       this.handleSuccess();
-      console.log('✓ [VectorDatabaseClient] 永久删除成功，ID:', id);
       return true;
     } catch {
       this.handleFailure();
-      console.error('❌ [VectorDatabaseClient] 删除异常');
       return false;
     }
   }
@@ -740,7 +562,6 @@ export class VectorDatabaseClient {
     this.consecutiveFailures = 0;
     if (wasDegraded) {
       this.state = 'connected';
-      console.log('✓ [VectorDatabaseClient] 从降级模式恢复正常');
     }
   }
 
@@ -749,12 +570,8 @@ export class VectorDatabaseClient {
    */
   private handleFailure(): void {
     this.consecutiveFailures++;
-    console.warn(
-      `⚠️ [VectorDatabaseClient] 操作失败，连续失败次数: ${this.consecutiveFailures}/${this.maxConsecutiveFailures}`
-    );
     if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
       this.state = 'degraded';
-      console.warn('⚠️ [VectorDatabaseClient] 连续失败次数过多，进入降级模式');
     }
   }
 
@@ -769,23 +586,14 @@ export class VectorDatabaseClient {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        if (attempt > 0) {
-          console.log(
-            `🔄 [VectorDatabaseClient] 重试操作 (第 ${attempt + 1} 次)...`
-          );
-        }
         return await operation();
       } catch (error) {
         lastError = error instanceof Error ? error : new Error('未知错误');
         const delay = Math.pow(2, attempt) * 1000; // 指数退避
-        console.warn(
-          `⚠️ [VectorDatabaseClient] 操作失败，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`
-        );
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
 
-    console.error(`❌ [VectorDatabaseClient] 重试 ${maxRetries} 次后仍然失败`);
     throw lastError ?? new Error('重试操作失败');
   }
 

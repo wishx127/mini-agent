@@ -119,23 +119,11 @@ export class Controller {
       this.memoryDispatcher = new MemoryDispatcher({
         enabled: true,
       });
-      console.log(
-        '✓ [Controller] LongTermMemoryReader/Dispatcher 实例创建成功'
-      );
 
       // 异步初始化，不阻塞构造函数
-      console.log('🔄 [Controller] 异步初始化向量数据库连接...');
-      this.longTermMemoryReader.initialize().catch((err) => {
-        console.warn(
-          '⚠️ [Controller] 长期记忆初始化失败，降级为仅短期记忆模式:',
-          err
-        );
+      this.longTermMemoryReader.initialize().catch(() => {
         this.longTermMemoryReader = null;
       });
-    } else {
-      console.log(
-        'ℹ️ [Controller] 长期记忆未启用或未配置向量数据库，跳过初始化'
-      );
     }
 
     // 构建 prompt 模板：system + long_term_memory + history 占位符 + human
@@ -199,21 +187,15 @@ export class Controller {
 
     // 验证配置值
     if (merged.maxTokens <= 0) {
-      console.warn('⚠️ [Controller] maxTokens 必须大于 0，使用默认值');
       merged.maxTokens = DEFAULT_CONTROL_CONFIG.maxTokens;
     }
     if (!Number.isFinite(merged.maxIterations) || merged.maxIterations <= 0) {
-      console.warn('⚠️ [Controller] maxIterations 必须大于 0，使用默认值');
       merged.maxIterations = DEFAULT_CONTROL_CONFIG.maxIterations;
     }
     if (merged.timeout <= 0) {
-      console.warn('⚠️ [Controller] timeout 必须大于 0，使用默认值');
       merged.timeout = DEFAULT_CONTROL_CONFIG.timeout;
     }
     if (merged.tokenThreshold <= 0 || merged.tokenThreshold > 1) {
-      console.warn(
-        '⚠️ [Controller] tokenThreshold 必须在 (0, 1] 范围内，使用默认值'
-      );
       merged.tokenThreshold = DEFAULT_CONTROL_CONFIG.tokenThreshold;
     }
 
@@ -249,37 +231,17 @@ export class Controller {
 
     // 检索长期记忆（在 try 块之前，便于降级处理）
     let longTermMemoryContext = '';
-    console.log('🔍 [Controller] 开始检索长期记忆...');
     try {
       if (this.longTermMemoryReader) {
-        console.log('📤 [Controller] 调用长期记忆读取器进行检索...');
-        console.log(
-          '📋 [Controller] 检索查询:',
-          prompt.substring(0, 50) + (prompt.length > 50 ? '...' : '')
-        );
         const memories = await this.longTermMemoryReader.search(prompt);
-        console.log(`📊 [Controller] 检索到 ${memories.length} 条相关记忆`);
 
         if (memories.length > 0) {
-          console.log('🔄 [Controller] 格式化记忆为 Prompt 上下文...');
           longTermMemoryContext =
             this.longTermMemoryReader.formatMemoriesForPrompt(memories);
-          console.log('✓ [Controller] 长期记忆上下文已生成');
-          console.log(
-            '📋 [Controller] 记忆上下文预览:',
-            longTermMemoryContext.substring(0, 100) + '...'
-          );
-        } else {
-          console.log('ℹ️ [Controller] 未找到相关长期记忆');
         }
-      } else {
-        console.log('ℹ️ [Controller] 长期记忆读取器未初始化，跳过检索');
       }
-    } catch (error) {
-      console.warn(
-        '⚠️ [Controller] 长期记忆检索失败，继续使用短期记忆:',
-        error
-      );
+    } catch {
+      // 检索失败继续流程
     }
 
     try {
@@ -380,7 +342,6 @@ export class Controller {
       return this.fallback('iteration_exceeded');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
-      console.error(`❌ [Controller] 执行错误: ${errorMessage}`);
       this.state = 'failed';
       this.metrics.endTime = Date.now();
       this.metrics.totalDuration =
@@ -399,17 +360,9 @@ export class Controller {
     input: string,
     longTermMemoryContext?: string
   ): Promise<string> {
-    console.log('🤖 [Controller] 开始生成 LLM 响应...');
     const hasLongTermMemory =
       this.longTermMemoryReader && longTermMemoryContext;
 
-    console.log('📋 [Controller] LLM 调用配置:', {
-      hasLongTermMemory,
-      inputLength: input.length,
-      sessionId: this.sessionId,
-    });
-
-    const startTime = Date.now();
     const response = hasLongTermMemory
       ? await this.chainWithLongTermMemory.invoke(
           {
@@ -422,8 +375,6 @@ export class Controller {
           { input },
           { configurable: { sessionId: this.sessionId } }
         );
-    const llmDuration = Date.now() - startTime;
-    console.log(`✓ [Controller] LLM 响应完成，耗时: ${llmDuration}ms`);
 
     this.state = 'completed';
     this.metrics.endTime = Date.now();
@@ -431,14 +382,8 @@ export class Controller {
 
     // 记录 token 消耗（仅统计 usage，不计算 USD 成本）
     this.costTracker.record(response.usage_metadata);
-    console.log('📊 [Controller] Token 消耗:', {
-      inputTokens: response.usage_metadata?.input_tokens || 0,
-      outputTokens: response.usage_metadata?.output_tokens || 0,
-      totalTokens: response.usage_metadata?.total_tokens || 0,
-    });
 
     if (response && typeof response.content === 'string') {
-      console.log('✓ [Controller] LLM 响应内容长度:', response.content.length);
       // 异步提取长期记忆（不阻塞响应）
       void this.extractLongTermMemoryAsync(input, response.content);
       return response.content;
@@ -454,30 +399,18 @@ export class Controller {
     userMessage: string,
     aiResponse: string
   ): Promise<void> {
-    console.log('🧠 [Controller] 开始异步入队长期记忆...');
     if (!this.memoryDispatcher) {
-      console.log('ℹ️ [Controller] 长期记忆派发器未初始化，跳过入队');
       return;
     }
 
-    console.log('📋 [Controller] 提取参数:', {
-      userMessageLength: userMessage.length,
-      aiResponseLength: aiResponse.length,
-      sessionId: this.sessionId,
-    });
-
     try {
-      const startTime = Date.now();
       await this.memoryDispatcher.enqueue({
         userMessage,
         aiResponse,
         sessionId: this.sessionId,
       });
-      const duration = Date.now() - startTime;
-      console.log(`✓ [Controller] 长期记忆任务已入队，耗时: ${duration}ms`);
-    } catch (error) {
+    } catch {
       // 提取失败不影响主流程
-      console.warn('⚠️ [Controller] 长期记忆提取失败:', error);
     }
   }
 

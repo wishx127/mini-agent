@@ -315,7 +315,6 @@ export class WorkerMonitor {
   private log(message: string): void {
     const timestamp = new Date().toISOString();
     const logLine = `[${timestamp}] [Monitor] ${message}\n`;
-    console.log(`[WorkerMonitor] ${message}`);
 
     if (this.logStream) {
       this.logStream.write(logLine);

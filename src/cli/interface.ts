@@ -105,9 +105,6 @@ export class CLIInterface {
           'Type your message. Press Ctrl+C or enter "quit" to exit.'
         )
       );
-      console.log(
-        Colors.secondary('Enter "memory" to check background worker status.')
-      );
       console.log();
     } catch (error) {
       console.error(
@@ -146,8 +143,6 @@ export class CLIInterface {
     child.stderr?.pipe(logStream);
     child.unref();
     this.workerProcess = child;
-
-    console.log(Colors.secondary(`Memory worker started (log: ${logPath})`));
   }
 
   /**

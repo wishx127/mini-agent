@@ -71,12 +71,10 @@ async function main(): Promise<void> {
 
   const longTermMemory = config.longTermMemory;
   if (!longTermMemory?.enabled) {
-    console.error('❌ [Worker] 长期记忆未启用，无法启动 Worker');
     process.exit(1);
   }
 
   if (!longTermMemory.supabaseUrl || !longTermMemory.supabaseApiKey) {
-    console.error('❌ [Worker] 向量数据库配置不完整，无法启动 Worker');
     process.exit(1);
   }
 
@@ -113,7 +111,6 @@ async function main(): Promise<void> {
 
   const connected = await memoryManager.initialize();
   if (!connected) {
-    console.error('❌ [Worker] 向量数据库连接失败，Worker 退出');
     process.exit(1);
   }
 
@@ -147,8 +144,8 @@ async function main(): Promise<void> {
             status,
           });
         }
-      } catch (error) {
-        console.error('❌ [Worker] 发送心跳失败:', error);
+      } catch {
+        // 心跳失败不打印
       }
     })();
   }, 5000); // 每 5 秒发送一次心跳
@@ -159,7 +156,6 @@ async function main(): Promise<void> {
     setInterval(() => {
       if (!parentGone && !isProcessAlive(parentPid)) {
         parentGone = true;
-        console.log('ℹ️ [Worker] 父进程已退出，将在队列清空后自动退出');
       }
     }, checkIntervalMs);
 
@@ -171,7 +167,6 @@ async function main(): Promise<void> {
         void (async () => {
           const pending = await memoryManager.getPendingJobCount();
           if (pending === 0) {
-            console.log('✓ [Worker] 队列已清空，Worker 退出');
             memoryManager.shutdown();
             process.exit(0);
           }
@@ -181,7 +176,6 @@ async function main(): Promise<void> {
   }
 
   const shutdown = () => {
-    console.log('🔌 [Worker] 收到退出信号，正在关闭...');
     clearInterval(heartbeatInterval);
     memoryManager.shutdown();
     process.exit(0);
@@ -205,11 +199,6 @@ async function main(): Promise<void> {
       // 静默失败
     }
   })();
-
-  console.log('✓ [Worker] 长期记忆 Worker 已启动');
-  console.log(
-    `📋 [Worker] PID: ${process.pid}, 父进程 PID: ${parentPid || '无'}`
-  );
 }
 
 void main();
