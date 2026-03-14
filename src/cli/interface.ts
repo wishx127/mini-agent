@@ -10,6 +10,7 @@ import { Command } from 'commander';
 import { AgentCore } from '../agent/core.js';
 import { ModelConfigManager } from '../config/model-config.js';
 import type { ModelConfig } from '../types/model-config.js';
+import { checkWorkerStatus } from '../worker/worker-monitor-utils.js';
 
 import { DisplayManager } from './display-manager.js';
 
@@ -104,6 +105,9 @@ export class CLIInterface {
           'Type your message. Press Ctrl+C or enter "quit" to exit.'
         )
       );
+      console.log(
+        Colors.secondary('Enter "memory" to check background worker status.')
+      );
       console.log();
     } catch (error) {
       console.error(
@@ -179,9 +183,16 @@ export class CLIInterface {
     const trimmedInput = input.trim();
 
     // 检查退出命令
-    if (['quit', 'exit'].includes(trimmedInput.toLowerCase())) {
+    if (['quit'].includes(trimmedInput.toLowerCase())) {
       console.log(Colors.secondary('Goodbye.'));
       this.rl.close();
+      return;
+    }
+
+    // 检查状态查询命令
+    if (['memory'].includes(trimmedInput.toLowerCase())) {
+      checkWorkerStatus();
+      this.promptUser();
       return;
     }
 
