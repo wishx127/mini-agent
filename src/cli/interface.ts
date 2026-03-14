@@ -1,4 +1,7 @@
 import * as readline from 'readline';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'module';
 
 import chalk from 'chalk';
@@ -6,6 +9,8 @@ import { Command } from 'commander';
 
 import { AgentCore } from '../agent/core.js';
 import { ModelConfigManager } from '../config/model-config.js';
+import type { ModelConfig } from '../types/model-config.js';
+import { checkWorkerStatus } from '../worker/worker-monitor-utils.js';
 
 import { DisplayManager } from './display-manager.js';
 
@@ -55,6 +60,8 @@ export class CLIInterface {
   private rl!: readline.Interface;
   private program: Command;
   private displayManager: DisplayManager;
+  private config!: ModelConfig;
+  private workerProcess: ChildProcess | null = null;
 
   constructor() {
     this.program = new Command();
@@ -82,16 +89,16 @@ export class CLIInterface {
   private initializeAgent(configPath?: string): void {
     try {
       const configManager = new ModelConfigManager(configPath);
-      const config = configManager.getConfig();
-      this.agent = new AgentCore(config);
+      this.config = configManager.getConfig();
+      this.agent = new AgentCore(this.config);
 
       console.log();
       console.log(
         Colors.primary('mini-agent ') + Colors.secondary(`v${VERSION}`)
       );
       console.log(Colors.secondary('─'.repeat(40)));
-      console.log(Colors.secondary('Model: ') + config.modelName);
-      console.log(Colors.secondary('Endpoint: ') + config.baseUrl);
+      console.log(Colors.secondary('Model: ') + this.config.modelName);
+      console.log(Colors.secondary('Endpoint: ') + this.config.baseUrl);
       console.log();
       console.log(
         Colors.secondary(
@@ -106,6 +113,36 @@ export class CLIInterface {
       );
       process.exit(1);
     }
+  }
+
+  private startMemoryWorker(configPath?: string): void {
+    const longTermMemory = this.config.longTermMemory;
+    if (!longTermMemory?.enabled) {
+      return;
+    }
+    if (longTermMemory.queueWorkerEnabled === false) {
+      return;
+    }
+    if (this.workerProcess) {
+      return;
+    }
+
+    const workerPath = path.join('dist', 'worker', 'memory-consumer.js');
+    const args = [workerPath, '--parent-pid', String(process.pid)];
+    if (configPath) {
+      args.push('--config', configPath);
+    }
+
+    const logPath = path.join(process.cwd(), 'memory-worker.log');
+    const logStream = createWriteStream(logPath, { flags: 'a' });
+    const child = spawn('node', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    child.stdout?.pipe(logStream);
+    child.stderr?.pipe(logStream);
+    child.unref();
+    this.workerProcess = child;
   }
 
   /**
@@ -141,9 +178,16 @@ export class CLIInterface {
     const trimmedInput = input.trim();
 
     // 检查退出命令
-    if (['quit', 'exit'].includes(trimmedInput.toLowerCase())) {
+    if (['quit'].includes(trimmedInput.toLowerCase())) {
       console.log(Colors.secondary('Goodbye.'));
       this.rl.close();
+      return;
+    }
+
+    // 检查状态查询命令
+    if (['memory'].includes(trimmedInput.toLowerCase())) {
+      checkWorkerStatus();
+      this.promptUser();
       return;
     }
 
@@ -232,6 +276,9 @@ export class CLIInterface {
 
     // 初始化Agent
     this.initializeAgent(configPath ?? (options.config as string | undefined));
+    this.startMemoryWorker(
+      configPath ?? (options.config as string | undefined)
+    );
 
     // 创建readline接口
     this.createReadlineInterface();

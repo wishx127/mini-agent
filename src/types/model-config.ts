@@ -33,6 +33,11 @@ export interface ModelConfig {
    * 编排层控制配置
    */
   orchestration?: OrchestrationConfig;
+
+  /**
+   * 长期记忆配置
+   */
+  longTermMemory?: LongTermMemoryOptions;
 }
 
 /**
@@ -80,6 +85,81 @@ export interface OrchestrationConfig {
    * 结果最大长度（默认 4000）
    */
   maxResultLength?: number;
+}
+
+/**
+ * 长期记忆配置选项
+ */
+export interface LongTermMemoryOptions {
+  /**
+   * 是否启用长期记忆（默认 false）
+   */
+  enabled?: boolean;
+
+  /**
+   * Supabase URL
+   */
+  supabaseUrl?: string;
+
+  /**
+   * Supabase API Key
+   */
+  supabaseApiKey?: string;
+
+  /**
+   * Embedding API Key（用于生成向量）
+   */
+  embeddingApiKey?: string;
+
+  /**
+   * Embedding API URL（可选，默认使用阿里云 dashscope）
+   */
+  embeddingApiUrl?: string;
+
+  /**
+   * Embedding 模型名称（可选，默认 text-embedding-v3）
+   */
+  embeddingModel?: string;
+
+  /**
+   * 检索 top-k 数量（默认 5）
+   */
+  topK?: number;
+
+  /**
+   * 记忆提取置信度阈值（默认 0.7）
+   */
+  extractionThreshold?: number;
+
+  /**
+   * 向量数据库表名（默认 memories）
+   */
+  tableName?: string;
+
+  /**
+   * Embedding 维度（默认 1536）
+   */
+  embeddingDimension?: number;
+
+  /**
+   * 是否启用队列 worker（默认 true）
+   */
+  queueWorkerEnabled?: boolean;
+
+  /**
+   * 队列最大重试次数（默认 3）
+   */
+  queueMaxAttempts?: number;
+
+  /**
+   * 队列重试退避时间（毫秒，默认 30000）
+   */
+  queueRetryBackoffMs?: number;
+
+  /**
+   * 队列轮询间隔（毫秒，默认 5000）
+   */
+  queuePollIntervalMs?: number;
 }
 
 /**

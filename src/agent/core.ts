@@ -2,6 +2,7 @@ import { ChatOpenAI } from '@langchain/openai';
 
 import { ModelConfig } from '../types/model-config.js';
 import { ControlConfig } from '../types/agent.js';
+import type { VectorDatabaseConfig } from '../types/memory.js';
 import { ToolRegistry, toolLoader } from '../tools/index.js';
 
 import { Controller } from './controller.js';
@@ -91,7 +92,37 @@ export class AgentCore {
    */
   private initializeController(): Controller {
     const controlConfig = this.getControlConfig();
-    return new Controller(this.llm, this.toolRegistry, controlConfig);
+    const vectorDbConfig = this.getVectorDbConfig();
+    return new Controller(
+      this.llm,
+      this.toolRegistry,
+      controlConfig,
+      vectorDbConfig
+    );
+  }
+
+  /**
+   * 获取向量数据库配置
+   */
+  private getVectorDbConfig(): VectorDatabaseConfig | undefined {
+    const longTermMemory = this.config.longTermMemory;
+    if (!longTermMemory || !longTermMemory.enabled) {
+      return undefined;
+    }
+
+    if (!longTermMemory.supabaseUrl || !longTermMemory.supabaseApiKey) {
+      return undefined;
+    }
+
+    return {
+      supabaseUrl: longTermMemory.supabaseUrl,
+      supabaseApiKey: longTermMemory.supabaseApiKey,
+      tableName: longTermMemory.tableName,
+      embeddingDimension: longTermMemory.embeddingDimension,
+      embeddingApiUrl: longTermMemory.embeddingApiUrl,
+      embeddingModel: longTermMemory.embeddingModel,
+      embeddingApiKey: longTermMemory.embeddingApiKey,
+    };
   }
 
   /**
@@ -99,18 +130,30 @@ export class AgentCore {
    */
   private getControlConfig(): Partial<ControlConfig> {
     const orchestration = this.config.orchestration;
-    if (!orchestration) {
-      return {};
+    const longTermMemoryEnabled = this.config.longTermMemory?.enabled ?? false;
+
+    const controlConfig: Partial<ControlConfig> = {
+      maxTokens: this.config.maxTokens ?? 4096,
+      enableLongTermMemory: longTermMemoryEnabled,
+    };
+
+    if (orchestration?.maxIterations !== undefined) {
+      controlConfig.maxIterations = orchestration.maxIterations;
+    }
+    if (orchestration?.timeout !== undefined) {
+      controlConfig.timeout = orchestration.timeout;
+    }
+    if (orchestration?.tokenThreshold !== undefined) {
+      controlConfig.tokenThreshold = orchestration.tokenThreshold;
+    }
+    if (orchestration?.toolTimeout !== undefined) {
+      controlConfig.toolTimeout = orchestration.toolTimeout;
+    }
+    if (orchestration?.maxResultLength !== undefined) {
+      controlConfig.maxResultLength = orchestration.maxResultLength;
     }
 
-    return {
-      maxIterations: orchestration.maxIterations,
-      timeout: orchestration.timeout,
-      tokenThreshold: orchestration.tokenThreshold,
-      toolTimeout: orchestration.toolTimeout,
-      maxResultLength: orchestration.maxResultLength,
-      maxTokens: this.config.maxTokens ?? 4096,
-    };
+    return controlConfig;
   }
 
   // ==================== 主入口 ====================
