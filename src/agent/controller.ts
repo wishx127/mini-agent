@@ -31,6 +31,13 @@ import {
 } from '../types/agent.js';
 import type { VectorDatabaseConfig } from '../types/memory.js';
 import { ToolRegistry } from '../tools/index.js';
+import {
+  TraceManager,
+  SpanManager,
+  calculateCost,
+  createDisabledObservabilityClient,
+  type LLMUsage,
+} from '../observability/index.js';
 
 import { Planner } from './planner.js';
 import { Executor } from './executor.js';
@@ -45,18 +52,16 @@ import {
   MemoryDispatcher,
 } from './memory/index.js';
 
-/**
- * Controller - Agent 编排层的控制模块
- *
- * 职责：
- * - 跨请求会话记忆（通过 RunnableWithMessageHistory）
- * - 长期记忆检索与派发（通过 LongTermMemoryReader / MemoryDispatcher）
- * - Token 上限控制（预检 + 链内裁剪）
- * - 超时管理
- * - 调用次数限制
- * - 失败兜底策略
- * - 协调 Planner 和 Executor
- */
+function createDefaultTraceManager(): TraceManager {
+  const client = createDisabledObservabilityClient();
+  return new TraceManager(client);
+}
+
+function createDefaultSpanManager(): SpanManager {
+  const client = createDisabledObservabilityClient();
+  return new SpanManager(client, createDefaultTraceManager());
+}
+
 export class Controller {
   private config: ControlConfig;
   private metrics: ExecutionMetrics;
@@ -75,18 +80,32 @@ export class Controller {
     { input: string; long_term_memory: BaseMessage[] },
     AIMessage
   >;
+  private traceManager: TraceManager;
+  private spanManager: SpanManager;
+  private modelName: string;
 
   constructor(
     llm: ChatOpenAI,
     toolRegistry: ToolRegistry,
     config: Partial<ControlConfig> = {},
-    vectorDbConfig?: VectorDatabaseConfig
+    vectorDbConfig?: VectorDatabaseConfig,
+    traceManager?: TraceManager,
+    spanManager?: SpanManager,
+    modelName?: string
   ) {
     this.config = this.validateAndMergeConfig(config);
     this.llm = llm;
     this.toolRegistry = toolRegistry;
-    this.planner = new Planner(llm, toolRegistry);
-    this.executor = new Executor(toolRegistry, this.config);
+    this.traceManager = traceManager ?? createDefaultTraceManager();
+    this.spanManager = spanManager ?? createDefaultSpanManager();
+    this.modelName = modelName ?? 'gpt-3.5-turbo';
+    this.planner = new Planner(
+      llm,
+      toolRegistry,
+      this.spanManager,
+      this.modelName
+    );
+    this.executor = new Executor(toolRegistry, this.config, this.spanManager);
     this.metrics = this.initMetrics();
     // 初始化 startTime，避免 checkTimeout() 在 execute() 前调用时返回错误结果
     this.metrics.startTime = Date.now();
@@ -95,8 +114,7 @@ export class Controller {
     this.costTracker = new CostTracker();
 
     // 初始化长期记忆管理器（如果配置了向量数据库）
-    console.log('🔧 [Controller] 检查长期记忆配置...');
-    console.log('📋 [Controller] 配置信息:', {
+    console.log('🔧 [Controller] 配置信息:', {
       enableLongTermMemory: this.config.enableLongTermMemory,
       hasVectorDbConfig: !!vectorDbConfig,
       longTermMemoryTopK: this.config.longTermMemoryTopK,
@@ -104,7 +122,6 @@ export class Controller {
     });
 
     if (this.config.enableLongTermMemory && vectorDbConfig) {
-      console.log('✓ [Controller] 长期记忆已启用，开始初始化...');
       console.log('📋 [Controller] 向量数据库配置:', {
         supabaseUrl: vectorDbConfig.supabaseUrl ? '已配置' : '未配置',
         supabaseApiKey: vectorDbConfig.supabaseApiKey ? '已配置' : '未配置',
@@ -229,7 +246,13 @@ export class Controller {
     this.metrics = this.initMetrics();
     this.metrics.startTime = Date.now();
 
-    // 检索长期记忆（在 try 块之前，便于降级处理）
+    const traceId = this.traceManager.generateTraceId();
+    this.traceManager.createTrace({
+      traceId,
+      name: 'conversation',
+      sessionId: this.sessionId,
+      input: prompt,
+    });
     let longTermMemoryContext = '';
     try {
       if (this.longTermMemoryReader) {
@@ -279,7 +302,12 @@ export class Controller {
       // 检查是否有可用工具
       const enabledTools = this.toolRegistry.getEnabledTools();
       if (enabledTools.length === 0) {
-        return await this.llmResponseWithHistory(prompt, longTermMemoryContext);
+        const result = await this.llmResponseWithHistory(
+          prompt,
+          longTermMemoryContext
+        );
+        this.traceManager.endTrace(result);
+        return result;
       }
 
       // 工具调用循环
@@ -290,7 +318,8 @@ export class Controller {
       ) {
         // 检查超时
         if (this.checkTimeout()) {
-          return this.fallback('timeout');
+          const fallbackResult = this.fallback('timeout');
+          return fallbackResult;
         }
 
         this.metrics.iterationCount = iteration + 1;
@@ -306,10 +335,12 @@ export class Controller {
 
         // 如果不需要工具，直接获取 LLM 响应（历史由 chainWithHistory 自动管理）
         if (!plan.needsTool || plan.toolCalls.length === 0) {
-          return await this.llmResponseWithHistory(
+          const result = await this.llmResponseWithHistory(
             prompt,
             longTermMemoryContext
           );
+          this.traceManager.endTrace(result);
+          return result;
         }
 
         // 执行阶段
@@ -322,10 +353,12 @@ export class Controller {
         // 处理执行结果
         const allFailed = results.every((r) => !r.success);
         if (allFailed) {
-          return await this.llmResponseWithHistory(
+          const result = await this.llmResponseWithHistory(
             prompt,
             longTermMemoryContext
           );
+          this.traceManager.endTrace(result);
+          return result;
         }
 
         // 将工具结果注入 prompt，然后获取最终 LLM 响应
@@ -333,13 +366,16 @@ export class Controller {
           .map((r) => `[工具: ${r.toolName}]\n${r.result}`)
           .join('\n\n');
         const finalInput = `${prompt}\n\n以下是工具执行结果，请基于这些结果回答用户的问题：\n\n${toolContext}`;
-        return await this.llmResponseWithHistory(
+        const result = await this.llmResponseWithHistory(
           finalInput,
           longTermMemoryContext
         );
+        this.traceManager.endTrace(result);
+        return result;
       }
 
-      return this.fallback('iteration_exceeded');
+      const fallbackResult = this.fallback('iteration_exceeded');
+      return fallbackResult;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       this.state = 'failed';
@@ -363,33 +399,65 @@ export class Controller {
     const hasLongTermMemory =
       this.longTermMemoryReader && longTermMemoryContext;
 
-    const response = hasLongTermMemory
-      ? await this.chainWithLongTermMemory.invoke(
-          {
-            input,
-            long_term_memory: [new HumanMessage(longTermMemoryContext)],
-          },
-          { configurable: { sessionId: this.sessionId } }
-        )
-      : await this.chainWithHistory.invoke(
-          { input },
-          { configurable: { sessionId: this.sessionId } }
+    const spanId = this.spanManager.createLLMSpan(
+      'llm-response',
+      { input, hasLongTermMemory },
+      this.modelName
+    );
+
+    try {
+      const response = hasLongTermMemory
+        ? await this.chainWithLongTermMemory.invoke(
+            {
+              input,
+              long_term_memory: [new HumanMessage(longTermMemoryContext)],
+            },
+            { configurable: { sessionId: this.sessionId } }
+          )
+        : await this.chainWithHistory.invoke(
+            { input },
+            { configurable: { sessionId: this.sessionId } }
+          );
+
+      this.state = 'completed';
+      this.metrics.endTime = Date.now();
+
+      this.costTracker.record(response.usage_metadata, this.modelName);
+
+      const usage: LLMUsage | undefined = response.usage_metadata
+        ? {
+            inputTokens: response.usage_metadata.input_tokens ?? 0,
+            outputTokens: response.usage_metadata.output_tokens ?? 0,
+            totalTokens: response.usage_metadata.total_tokens ?? 0,
+          }
+        : undefined;
+
+      const cost = usage ? calculateCost(usage, this.modelName) : undefined;
+
+      if (spanId) {
+        this.spanManager.endLLMSpan(
+          spanId,
+          response.content,
+          usage,
+          cost,
+          this.modelName
         );
+      }
 
-    this.state = 'completed';
-    this.metrics.endTime = Date.now();
-    this.metrics.totalDuration = this.metrics.endTime - this.metrics.startTime;
+      if (response && typeof response.content === 'string') {
+        void this.extractLongTermMemoryAsync(input, response.content);
+        return response.content;
+      }
 
-    // 记录 token 消耗（仅统计 usage，不计算 USD 成本）
-    this.costTracker.record(response.usage_metadata);
-
-    if (response && typeof response.content === 'string') {
-      // 异步提取长期记忆（不阻塞响应）
-      void this.extractLongTermMemoryAsync(input, response.content);
-      return response.content;
+      throw new Error('模型响应格式不正确');
+    } catch (error) {
+      if (spanId) {
+        this.spanManager.endSpan(spanId, {
+          error: error instanceof Error ? error : new Error('未知错误'),
+        });
+      }
+      throw error;
     }
-
-    throw new Error('模型响应格式不正确');
   }
 
   /**

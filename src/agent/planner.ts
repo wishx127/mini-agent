@@ -13,10 +13,14 @@ import {
   ConversationMessage,
 } from '../types/agent.js';
 import { ToolRegistry } from '../tools/index.js';
+import {
+  SpanManager,
+  calculateCost,
+  createDisabledObservabilityClient,
+  type LLMUsage,
+} from '../observability/index.js';
+import { TraceManager } from '../observability/trace-manager.js';
 
-/**
- * 搜索关键词列表（用于规则兜底）
- */
 const SEARCH_KEYWORDS = [
   '搜索',
   '查询',
@@ -29,23 +33,28 @@ const SEARCH_KEYWORDS = [
   'look up',
 ];
 
-/**
- * Planner - Agent 编排层的规划模块
- *
- * 职责：
- * - 判断是否需要使用工具
- * - 选择最合适的工具
- * - 规划工具执行顺序
- * - 参数验证
- * - LLM 决策和规则兜底
- */
+function createDefaultSpanManager(): SpanManager {
+  const client = createDisabledObservabilityClient();
+  const traceManager = new TraceManager(client);
+  return new SpanManager(client, traceManager);
+}
+
 export class Planner {
   private llm: ChatOpenAI;
   private toolRegistry: ToolRegistry;
+  private spanManager: SpanManager;
+  private modelName: string;
 
-  constructor(llm: ChatOpenAI, toolRegistry: ToolRegistry) {
+  constructor(
+    llm: ChatOpenAI,
+    toolRegistry: ToolRegistry,
+    spanManager?: SpanManager,
+    modelName?: string
+  ) {
     this.llm = llm;
     this.toolRegistry = toolRegistry;
+    this.spanManager = spanManager ?? createDefaultSpanManager();
+    this.modelName = modelName ?? 'gpt-3.5-turbo';
   }
 
   /**
@@ -167,6 +176,12 @@ export class Planner {
     conversationHistory: ConversationMessage[],
     tools: ToolInfo[]
   ): Promise<ExecutionPlan | null> {
+    const spanId = this.spanManager.createLLMSpan(
+      'planner-decision',
+      { prompt, toolsCount: tools.length },
+      this.modelName
+    );
+
     try {
       const langChainTools = this.toolRegistry.getLangChainTools();
       const llmWithTools = this.llm.bindTools(langChainTools);
@@ -177,6 +192,29 @@ export class Planner {
       );
 
       const response = await llmWithTools.invoke(messages);
+
+      const usage: LLMUsage | undefined = response.usage_metadata
+        ? {
+            inputTokens: response.usage_metadata.input_tokens ?? 0,
+            outputTokens: response.usage_metadata.output_tokens ?? 0,
+            totalTokens: response.usage_metadata.total_tokens ?? 0,
+          }
+        : undefined;
+
+      const cost = usage ? calculateCost(usage, this.modelName) : undefined;
+
+      if (spanId) {
+        this.spanManager.endLLMSpan(
+          spanId,
+          {
+            toolCalls: response.tool_calls,
+            needsTool: !!response.tool_calls?.length,
+          },
+          usage,
+          cost,
+          this.modelName
+        );
+      }
 
       if (response.tool_calls && response.tool_calls.length > 0) {
         const toolCalls: ToolCallDetail[] = response.tool_calls.map(
@@ -200,7 +238,12 @@ export class Planner {
         toolCalls: [],
         reasoning: 'LLM 判断不需要使用工具',
       };
-    } catch {
+    } catch (error) {
+      if (spanId) {
+        this.spanManager.endSpan(spanId, {
+          error: error instanceof Error ? error : new Error('未知错误'),
+        });
+      }
       return null;
     }
   }

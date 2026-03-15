@@ -12,24 +12,31 @@ import {
   ToolCallDetail,
 } from '../types/agent.js';
 import { ToolRegistry, CircuitOpenError } from '../tools/index.js';
+import {
+  SpanManager,
+  createDisabledObservabilityClient,
+} from '../observability/index.js';
+import { TraceManager } from '../observability/trace-manager.js';
 
-/**
- * Executor - Agent 编排层的执行模块
- *
- * 职责：
- * - 工具调用执行
- * - 异常处理和分类
- * - 重试机制
- * - 结果格式化和截断
- * - 执行时间追踪
- */
+function createDefaultSpanManager(): SpanManager {
+  const client = createDisabledObservabilityClient();
+  const traceManager = new TraceManager(client);
+  return new SpanManager(client, traceManager);
+}
+
 export class Executor {
   private toolRegistry: ToolRegistry;
   private config: ControlConfig;
+  private spanManager: SpanManager;
 
-  constructor(toolRegistry: ToolRegistry, config: Partial<ControlConfig>) {
+  constructor(
+    toolRegistry: ToolRegistry,
+    config: Partial<ControlConfig>,
+    spanManager?: SpanManager
+  ) {
     this.toolRegistry = toolRegistry;
     this.config = { ...DEFAULT_CONTROL_CONFIG, ...config };
+    this.spanManager = spanManager ?? createDefaultSpanManager();
   }
 
   /**
@@ -79,7 +86,12 @@ export class Executor {
       return this.createFailureResult(toolCall, validationError, startTime);
     }
 
-    // 初始执行
+    const spanId = this.spanManager.createToolSpan(
+      'tool-execution',
+      toolCall.toolName,
+      toolCall.arguments
+    );
+
     let result = await this.executeTool(toolCall, startTime);
 
     // 如果失败，尝试重试
@@ -102,6 +114,16 @@ export class Executor {
           break;
         }
       }
+    }
+
+    if (spanId) {
+      this.spanManager.endToolSpan(
+        spanId,
+        result.result,
+        result.success,
+        result.executionTime,
+        result.lastError ? new Error(result.lastError) : undefined
+      );
     }
 
     return result;
@@ -239,7 +261,7 @@ export class Executor {
   }
 
   /**
-   * 验证工具参数
+   * 验证工具调用参数
    */
   private validateParams(toolCall: ToolCallDetail): string | null {
     if (!toolCall.arguments || typeof toolCall.arguments !== 'object') {

@@ -15,6 +15,9 @@ export interface CostRecord {
   model?: string;
   timestamp: number;
   cost: number;
+  inputCost?: number;
+  outputCost?: number;
+  currency?: string;
 }
 
 /**
@@ -25,5 +28,8 @@ export interface CostSummary {
   totalOutputTokens: number;
   totalTokens: number;
   totalCost: number;
+  totalInputCost: number;
+  totalOutputCost: number;
+  currency: string;
   requestCount: number;
 }

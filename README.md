@@ -12,6 +12,7 @@
 - 🧠 跨请求会话记忆 - 基于 `RunnableWithMessageHistory` 的多轮对话上下文保持
 - 💾 长期记忆系统 - 基于向量数据库的持久化记忆，支持跨会话记忆用户偏好和重要信息
 - 📊 Token 管理 - 自动 token 预检与 `trimMessages` 滑动窗口裁剪
+- 📈 可观测性系统 - 接入 Langfuse 平台，支持 Trace/Span 追踪、Token 统计、成本统计和 Prompt 版本管理
 - 📝 环境变量和.env配置文件支持
 - 🔒 TypeScript类型安全
 - 🛡️ 熔断器保护 - 自动熔断故障工具,防止资源浪费
@@ -90,6 +91,25 @@ npm start -- --help
 | `LONG_TERM_MEMORY_TOP_K`       | `5`          | 检索记忆数量             |
 | `MEMORY_EXTRACTION_THRESHOLD`  | `0.7`        | 记忆提取置信度阈值       |
 | `MEMORY_DEFAULT_EXPIRATION_MS` | `2592000000` | 记忆默认过期时间（30天） |
+
+### 可观测性配置 (Langfuse)
+
+| 环境变量              | 默认值                       | 说明              |
+| --------------------- | ---------------------------- | ----------------- |
+| `LANGFUSE_PUBLIC_KEY` | -                            | Langfuse 公钥     |
+| `LANGFUSE_SECRET_KEY` | -                            | Langfuse 密钥     |
+| `LANGFUSE_HOST`       | `https://cloud.langfuse.com` | Langfuse 服务地址 |
+| `LANGFUSE_ENABLED`    | `true`                       | 是否启用可观测性  |
+
+配置 Langfuse 后，系统会自动追踪：
+
+- **Trace**: 每次对话的完整调用链
+- **Span**: 每次 LLM 调用和 Tool 调用
+- **Token 统计**: 输入/输出 Token 使用量
+- **成本统计**: 基于模型定价的自动成本计算
+- **Prompt 版本管理**: 系统 Prompt 模板自动注册
+
+详细文档见 [可观测性系统架构](docs/observability-architecture.md)。
 
 ### 长期记忆 Worker（自动）
 
@@ -216,6 +236,14 @@ src/
 │       ├── session-store.ts # SessionStore（内存会话存储）
 │       ├── token-manager.ts # Token 估算、裁剪与预检
 │       └── cost-tracker.ts  # Token 消耗统计
+├── observability/   # 可观测性系统
+│   ├── index.ts           # 模块导出
+│   ├── types.ts           # 类型定义
+│   ├── langfuse-client.ts # Langfuse 客户端管理
+│   ├── trace-manager.ts   # Trace 生命周期管理
+│   ├── span-manager.ts    # Span 创建和管理
+│   ├── cost-calculator.ts # 成本计算
+│   └── prompt-manager.ts  # Prompt 版本管理
 ├── config/          # 配置管理 (含工具配置)
 ├── cli/             # 命令行界面
 ├── types/           # TypeScript类型定义
