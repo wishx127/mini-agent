@@ -57,6 +57,9 @@ const tsConfig = tseslint.config(
 
 /** Google 风格规则覆盖 */
 const googleStyleConfig = {
+  plugins: {
+    '@typescript-eslint': tseslint.plugin,
+  },
   rules: {
     ...googleRules,
     'valid-jsdoc': 'off',

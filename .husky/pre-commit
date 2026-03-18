@@ -1,1 +1,2 @@
 node scripts/lint-staged-fix.js
+node scripts/pre-commit-tests.js

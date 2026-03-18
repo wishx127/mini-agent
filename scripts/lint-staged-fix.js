@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { execSync } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
+import path from 'path';
 
 const COLORS = {
   reset: '\x1b[0m',
@@ -16,107 +17,106 @@ function log(message, color = 'reset') {
   console.log(`${COLORS[color]}${message}${COLORS.reset}`);
 }
 
+function splitNullDelimited(text) {
+  if (!text) return [];
+  return text.split('\0').filter(Boolean);
+}
+
 function getStagedFiles() {
-  const output = execSync('git diff --cached --name-only --diff-filter=ACMR', {
-    encoding: 'utf-8',
-  });
-  return output.trim().split('\n').filter(Boolean);
+  const output = execFileSync(
+    'git',
+    ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'],
+    { encoding: 'utf-8' }
+  );
+  return splitNullDelimited(output);
 }
 
 function filterByExtension(files, extensions) {
+  const extSet = new Set(extensions.map((e) => e.toLowerCase()));
   return files.filter((file) => {
-    const ext = file.split('.').pop();
-    return extensions.includes(ext);
+    const ext = path.extname(file).slice(1).toLowerCase();
+    return extSet.has(ext);
   });
 }
 
-function runCommand(command, files) {
+function chunkFiles(files, chunkSize = 50) {
+  const chunks = [];
+  for (let i = 0; i < files.length; i += chunkSize) {
+    chunks.push(files.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+function resolveBin(name) {
+  const binName = process.platform === 'win32' ? `${name}.cmd` : name;
+  const localBin = path.join(process.cwd(), 'node_modules', '.bin', binName);
+  return existsSync(localBin) ? localBin : null;
+}
+
+function runTool(tool, baseArgs, files) {
   if (files.length === 0) return { success: true, output: '' };
-
-  const fileList = files.map((f) => `"${f}"`).join(' ');
-  const fullCommand = `${command} ${fileList}`;
-
-  try {
-    const output = execSync(fullCommand, { encoding: 'utf-8', stdio: 'pipe' });
-    return { success: true, output };
-  } catch (error) {
+  const toolPath = resolveBin(tool);
+  if (!toolPath) {
     return {
       success: false,
-      output: error.stdout || '',
-      error: error.stderr || error.message,
+      output: '',
+      error: `${tool} is not installed. Please add it to devDependencies.`,
     };
   }
+
+  let combinedOutput = '';
+  let combinedError = '';
+  let success = true;
+
+  for (const group of chunkFiles(files)) {
+    try {
+      const output = execFileSync(toolPath, [...baseArgs, ...group], {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      if (output) combinedOutput += output;
+    } catch (error) {
+      success = false;
+      combinedOutput += error.stdout || '';
+      combinedError += error.stderr || error.message || '';
+    }
+  }
+
+  return { success, output: combinedOutput, error: combinedError };
 }
 
 function runEslintFix(files) {
-  if (files.length === 0)
-    return { success: true, output: '', hasUnfixedErrors: false };
-
-  const fileList = files.map((f) => `"${f}"`).join(' ');
-  const command = `npx eslint ${fileList} --fix`;
-
-  try {
-    const output = execSync(command, { encoding: 'utf-8', stdio: 'pipe' });
-    return { success: true, output, hasUnfixedErrors: false };
-  } catch (error) {
-    const output = error.stdout || '';
-    const hasUnfixedErrors =
-      output.includes('error') || output.includes('warning');
-    return {
-      success: !hasUnfixedErrors,
-      output,
-      error: error.stderr || '',
-      hasUnfixedErrors,
-    };
-  }
+  const result = runTool('eslint', ['--fix', '--max-warnings=0'], files);
+  return {
+    ...result,
+    hasUnfixedErrors: !result.success,
+  };
 }
 
 function runPrettierFix(files) {
-  if (files.length === 0) return { success: true, output: '' };
-
-  const fileList = files.map((f) => `"${f}"`).join(' ');
-  const command = `npx prettier --write ${fileList}`;
-
-  try {
-    const output = execSync(command, { encoding: 'utf-8', stdio: 'pipe' });
-    return { success: true, output };
-  } catch (error) {
-    return {
-      success: false,
-      output: error.stdout || '',
-      error: error.stderr || error.message,
-    };
-  }
+  return runTool('prettier', ['--write', '--log-level', 'warn'], files);
 }
 
 function runStylelintFix(files) {
-  if (files.length === 0)
-    return { success: true, output: '', hasUnfixedErrors: false };
+  const result = runTool('stylelint', ['--fix', '--allow-empty-input'], files);
+  return {
+    ...result,
+    hasUnfixedErrors: !result.success,
+  };
+}
 
-  const fileList = files.map((f) => `"${f}"`).join(' ');
-  const command = `npx stylelint ${fileList} --fix`;
+function formatDurationMs(ms) {
+  if (ms < 1000) return `${ms.toFixed(0)}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
 
-  try {
-    const output = execSync(command, { encoding: 'utf-8', stdio: 'pipe' });
-    return { success: true, output, hasUnfixedErrors: false };
-  } catch (error) {
-    const output = error.stdout || '';
-    const hasUnfixedErrors =
-      output.includes('Error') || output.includes('error');
-    return {
-      success: !hasUnfixedErrors,
-      output,
-      error: error.stderr || '',
-      hasUnfixedErrors,
-    };
-  }
+function nowMs() {
+  return Number(process.hrtime.bigint() / 1000000n);
 }
 
 function stageFiles(files) {
   if (files.length === 0) return;
-
-  const fileList = files.map((f) => `"${f}"`).join(' ');
-  execSync(`git add ${fileList}`, { encoding: 'utf-8' });
+  execFileSync('git', ['add', '--', ...files], { encoding: 'utf-8' });
 }
 
 function main() {
@@ -137,69 +137,91 @@ function main() {
     'mjs',
     'cjs',
   ]);
-  const styleFiles = filterByExtension(stagedFiles, ['less', 'css']);
+  const styleFiles = filterByExtension(stagedFiles, ['less', 'css', 'scss']);
   const otherFiles = filterByExtension(stagedFiles, ['json', 'md']);
 
   let hasErrors = false;
-  const fixedFiles = [];
+  const totalStart = nowMs();
 
   if (jsTsFiles.length > 0) {
     log('📝 Checking JavaScript/TypeScript files...', 'blue');
 
+    const eslintStart = nowMs();
     const eslintResult = runEslintFix(jsTsFiles);
-    if (eslintResult.output) {
-      console.log(eslintResult.output);
-    }
-
-    if (eslintResult.hasUnfixedErrors) {
+    const eslintCost = nowMs() - eslintStart;
+    if (eslintResult.output) console.log(eslintResult.output);
+    if (!eslintResult.success) {
       hasErrors = true;
       log('\n❌ ESLint found errors that cannot be auto-fixed.', 'red');
-      log('   Please fix the errors above and commit again.\n', 'yellow');
-    } else if (eslintResult.success) {
-      fixedFiles.push(...jsTsFiles);
+      if (eslintResult.error) console.log(eslintResult.error);
+      log('   Fix the errors above and commit again.\n', 'yellow');
     }
+    log(
+      `⏱ ESLint: ${formatDurationMs(eslintCost)} (files: ${jsTsFiles.length})`,
+      'cyan'
+    );
 
+    const prettierStart = nowMs();
     const prettierResult = runPrettierFix(jsTsFiles);
+    const prettierCost = nowMs() - prettierStart;
     if (!prettierResult.success) {
-      log('\n❌ Prettier formatting failed for some files.', 'red');
-      console.log(prettierResult.error);
       hasErrors = true;
+      log('\n❌ Prettier formatting failed for some files.', 'red');
+      if (prettierResult.error) console.log(prettierResult.error);
     }
+    log(
+      `⏱ Prettier(JS/TS): ${formatDurationMs(prettierCost)} (files: ${jsTsFiles.length})`,
+      'cyan'
+    );
   }
 
   if (styleFiles.length > 0) {
     log('\n🎨 Checking style files...', 'blue');
 
+    const stylelintStart = nowMs();
     const stylelintResult = runStylelintFix(styleFiles);
-    if (stylelintResult.output) {
-      console.log(stylelintResult.output);
-    }
-
-    if (stylelintResult.hasUnfixedErrors) {
+    const stylelintCost = nowMs() - stylelintStart;
+    if (stylelintResult.output) console.log(stylelintResult.output);
+    if (!stylelintResult.success) {
       hasErrors = true;
       log('\n❌ Stylelint found errors that cannot be auto-fixed.', 'red');
-      log('   Please fix the errors above and commit again.\n', 'yellow');
-    } else if (stylelintResult.success) {
-      fixedFiles.push(...styleFiles);
+      if (stylelintResult.error) console.log(stylelintResult.error);
+      log('   Fix the errors above and commit again.\n', 'yellow');
     }
+    log(
+      `⏱ Stylelint: ${formatDurationMs(stylelintCost)} (files: ${styleFiles.length})`,
+      'cyan'
+    );
 
+    const prettierStart = nowMs();
     const prettierResult = runPrettierFix(styleFiles);
+    const prettierCost = nowMs() - prettierStart;
     if (!prettierResult.success) {
-      log('\n❌ Prettier formatting failed for some files.', 'red');
-      console.log(prettierResult.error);
       hasErrors = true;
+      log('\n❌ Prettier formatting failed for some files.', 'red');
+      if (prettierResult.error) console.log(prettierResult.error);
     }
+    log(
+      `⏱ Prettier(Style): ${formatDurationMs(prettierCost)} (files: ${styleFiles.length})`,
+      'cyan'
+    );
   }
 
   if (otherFiles.length > 0) {
     log('\n📄 Formatting other files (JSON, Markdown)...', 'blue');
 
+    const prettierStart = nowMs();
     const prettierResult = runPrettierFix(otherFiles);
+    const prettierCost = nowMs() - prettierStart;
     if (!prettierResult.success) {
-      log('\n❌ Prettier formatting failed for some files.', 'red');
-      console.log(prettierResult.error);
       hasErrors = true;
+      log('\n❌ Prettier formatting failed for some files.', 'red');
+      if (prettierResult.error) console.log(prettierResult.error);
     }
+    log(
+      `⏱ Prettier(Other): ${formatDurationMs(prettierCost)} (files: ${otherFiles.length})`,
+      'cyan'
+    );
   }
 
   const allCheckedFiles = [...jsTsFiles, ...styleFiles, ...otherFiles];
@@ -208,9 +230,14 @@ function main() {
     log('\n✅ Fixed files have been staged.', 'green');
   }
 
+  const totalCost = nowMs() - totalStart;
+  log(
+    `\n⏱ Total: ${formatDurationMs(totalCost)} (files: ${allCheckedFiles.length})`,
+    'cyan'
+  );
+
   if (hasErrors) {
     log('\n❌ Commit aborted due to lint errors.', 'red');
-    log('   Fix the errors above and try again.\n', 'yellow');
     process.exit(1);
   }
 
