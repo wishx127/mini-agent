@@ -2,8 +2,6 @@
  * Trace 管理模块
  * 负责对话级别的追踪生命周期管理
  */
-import type { Langfuse } from 'langfuse';
-
 import type { ObservabilityClient } from './langfuse-client.js';
 import type { TraceContext } from './types.js';
 
@@ -30,7 +28,10 @@ export class TraceManager {
       return null;
     }
 
-    const langfuseClient = this.client.getClient() as Langfuse;
+    const langfuseClient = this.client.getRawClient();
+    if (!langfuseClient) {
+      return null;
+    }
 
     const trace = langfuseClient.trace({
       id: context.traceId,
@@ -59,7 +60,11 @@ export class TraceManager {
 
     const duration = this.traceStartTime ? Date.now() - this.traceStartTime : 0;
 
-    const langfuseClient = this.client.getClient() as Langfuse;
+    const langfuseClient = this.client.getRawClient();
+    if (!langfuseClient) {
+      return;
+    }
+
     const trace = langfuseClient.trace({ id: this.currentTraceId });
 
     trace.update({

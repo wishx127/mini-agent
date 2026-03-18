@@ -286,10 +286,27 @@ export class CLIInterface {
     // 设置关闭处理
     this.rl.on('close', () => {
       console.log();
-      process.exit(0);
+      void this.cleanupAndExit(0);
+    });
+
+    // 处理 Ctrl+C 和其他退出信号
+    process.on('SIGINT', () => {
+      this.rl.close();
+    });
+
+    process.on('SIGTERM', () => {
+      this.rl.close();
     });
 
     // 开始交互
     this.promptUser();
+  }
+
+  private async cleanupAndExit(code: number): Promise<void> {
+    if (this.agent && this.agent.isObservabilityEnabled()) {
+      await this.agent.flushObservability();
+    }
+
+    process.exit(code);
   }
 }

@@ -94,20 +94,22 @@ npm start -- --help
 
 ### 可观测性配置 (Langfuse)
 
-| 环境变量              | 默认值                       | 说明              |
-| --------------------- | ---------------------------- | ----------------- |
-| `LANGFUSE_PUBLIC_KEY` | -                            | Langfuse 公钥     |
-| `LANGFUSE_SECRET_KEY` | -                            | Langfuse 密钥     |
-| `LANGFUSE_HOST`       | `https://cloud.langfuse.com` | Langfuse 服务地址 |
-| `LANGFUSE_ENABLED`    | `true`                       | 是否启用可观测性  |
+| 环境变量                | 默认值                       | 说明                |
+| ----------------------- | ---------------------------- | ------------------- |
+| `LANGFUSE_PUBLIC_KEY`   | -                            | Langfuse 公钥       |
+| `LANGFUSE_SECRET_KEY`   | -                            | Langfuse 密钥       |
+| `LANGFUSE_HOST`         | `https://cloud.langfuse.com` | Langfuse 服务地址   |
+| `LANGFUSE_ENABLED`      | `true`                       | 是否启用可观测性    |
+| `LANGFUSE_PROMPT_LABEL` | -                            | Prompt 标签（可选） |
 
 配置 Langfuse 后，系统会自动追踪：
 
 - **Trace**: 每次对话的完整调用链
-- **Span**: 每次 LLM 调用和 Tool 调用
+- **Generation**: 每次 LLM 调用（含 usage/cost 详情）
+- **Span**: 每次工具调用
 - **Token 统计**: 输入/输出 Token 使用量
 - **成本统计**: 基于模型定价的自动成本计算
-- **Prompt 版本管理**: 系统 Prompt 模板自动注册
+- **Prompt 版本管理**: 支持 Prompt 模板版本控制与动态获取
 
 详细文档见 [可观测性系统架构](docs/observability-architecture.md)。
 

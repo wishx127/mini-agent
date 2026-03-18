@@ -36,6 +36,7 @@ import {
   SpanManager,
   calculateCost,
   createDisabledObservabilityClient,
+  PromptManager,
   type LLMUsage,
 } from '../observability/index.js';
 
@@ -75,14 +76,16 @@ export class Controller {
   private longTermMemoryReader: LongTermMemoryReader | null = null;
   private memoryDispatcher: MemoryDispatcher | null = null;
   private readonly sessionId: string = 'default';
-  private chainWithHistory: Runnable<{ input: string }, AIMessage>;
+  private chainWithHistory: Runnable<{ input: string }, AIMessage> | null =
+    null;
   private chainWithLongTermMemory: Runnable<
     { input: string; long_term_memory: BaseMessage[] },
     AIMessage
-  >;
+  > | null = null;
   private traceManager: TraceManager;
   private spanManager: SpanManager;
   private modelName: string;
+  private promptManager: PromptManager;
 
   constructor(
     llm: ChatOpenAI,
@@ -99,6 +102,9 @@ export class Controller {
     this.traceManager = traceManager ?? createDefaultTraceManager();
     this.spanManager = spanManager ?? createDefaultSpanManager();
     this.modelName = modelName ?? 'gpt-3.5-turbo';
+    this.promptManager = new PromptManager(
+      this.spanManager.getObservabilityClient()
+    );
     this.planner = new Planner(
       llm,
       toolRegistry,
@@ -144,8 +150,20 @@ export class Controller {
     }
 
     // 构建 prompt 模板：system + long_term_memory + history 占位符 + human
+    void this.initializeChainsAsync();
+  }
+
+  private async initializeChainsAsync(): Promise<void> {
+    const systemPromptResult = await this.promptManager.getCompiledPrompt(
+      'agent-system',
+      {}
+    );
+    const systemPrompt =
+      systemPromptResult?.content ??
+      '你是一个智能助手，使用工具来回答需要实时信息的问题。';
+
     const prompt = ChatPromptTemplate.fromMessages([
-      ['system', '你是一个智能助手，使用工具来回答需要实时信息的问题。'],
+      ['system', systemPrompt],
       new MessagesPlaceholder({
         variableName: 'long_term_memory',
         optional: true,
@@ -163,7 +181,7 @@ export class Controller {
     const extractMessages = RunnableLambda.from(
       (v: ChatPromptValueInterface): BaseMessage[] => v.toChatMessages()
     );
-    const tools = toolRegistry.getLangChainTools();
+    const tools = this.toolRegistry.getLangChainTools();
     const chain = prompt
       .pipe(extractMessages)
       .pipe(trimmer)
@@ -253,7 +271,10 @@ export class Controller {
       sessionId: this.sessionId,
       input: prompt,
     });
+
+    let result = '';
     let longTermMemoryContext = '';
+
     try {
       if (this.longTermMemoryReader) {
         const memories = await this.longTermMemoryReader.search(prompt);
@@ -265,6 +286,7 @@ export class Controller {
       }
     } catch {
       // 检索失败继续流程
+      longTermMemoryContext = '';
     }
 
     try {
@@ -302,11 +324,10 @@ export class Controller {
       // 检查是否有可用工具
       const enabledTools = this.toolRegistry.getEnabledTools();
       if (enabledTools.length === 0) {
-        const result = await this.llmResponseWithHistory(
+        result = await this.llmResponseWithHistory(
           prompt,
           longTermMemoryContext
         );
-        this.traceManager.endTrace(result);
         return result;
       }
 
@@ -318,8 +339,8 @@ export class Controller {
       ) {
         // 检查超时
         if (this.checkTimeout()) {
-          const fallbackResult = this.fallback('timeout');
-          return fallbackResult;
+          result = this.fallback('timeout');
+          return result;
         }
 
         this.metrics.iterationCount = iteration + 1;
@@ -335,54 +356,54 @@ export class Controller {
 
         // 如果不需要工具，直接获取 LLM 响应（历史由 chainWithHistory 自动管理）
         if (!plan.needsTool || plan.toolCalls.length === 0) {
-          const result = await this.llmResponseWithHistory(
+          result = await this.llmResponseWithHistory(
             prompt,
             longTermMemoryContext
           );
-          this.traceManager.endTrace(result);
           return result;
         }
 
         // 执行阶段
-        const results: ToolExecutionResult[] =
+        const toolResults: ToolExecutionResult[] =
           await this.executor.execute(plan);
 
         // 更新指标
-        this.updateMetrics(results);
+        this.updateMetrics(toolResults);
 
         // 处理执行结果
-        const allFailed = results.every((r) => !r.success);
+        const allFailed = toolResults.every((r) => !r.success);
         if (allFailed) {
-          const result = await this.llmResponseWithHistory(
+          result = await this.llmResponseWithHistory(
             prompt,
             longTermMemoryContext
           );
-          this.traceManager.endTrace(result);
           return result;
         }
 
         // 将工具结果注入 prompt，然后获取最终 LLM 响应
-        const toolContext = results
+        const toolContext = toolResults
           .map((r) => `[工具: ${r.toolName}]\n${r.result}`)
           .join('\n\n');
         const finalInput = `${prompt}\n\n以下是工具执行结果，请基于这些结果回答用户的问题：\n\n${toolContext}`;
-        const result = await this.llmResponseWithHistory(
+        result = await this.llmResponseWithHistory(
           finalInput,
           longTermMemoryContext
         );
-        this.traceManager.endTrace(result);
         return result;
       }
 
-      const fallbackResult = this.fallback('iteration_exceeded');
-      return fallbackResult;
+      result = this.fallback('iteration_exceeded');
+      return result;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       this.state = 'failed';
       this.metrics.endTime = Date.now();
       this.metrics.totalDuration =
         this.metrics.endTime - this.metrics.startTime;
-      return `处理过程中发生错误: ${errorMessage}`;
+      result = `处理过程中发生错误: ${errorMessage}`;
+      return result;
+    } finally {
+      this.traceManager.endTrace(result);
     }
   }
 
@@ -399,6 +420,10 @@ export class Controller {
     const hasLongTermMemory =
       this.longTermMemoryReader && longTermMemoryContext;
 
+    if (!this.chainWithHistory) {
+      await this.initializeChainsAsync();
+    }
+
     const spanId = this.spanManager.createLLMSpan(
       'llm-response',
       { input, hasLongTermMemory },
@@ -407,14 +432,14 @@ export class Controller {
 
     try {
       const response = hasLongTermMemory
-        ? await this.chainWithLongTermMemory.invoke(
+        ? await this.chainWithLongTermMemory!.invoke(
             {
               input,
               long_term_memory: [new HumanMessage(longTermMemoryContext)],
             },
             { configurable: { sessionId: this.sessionId } }
           )
-        : await this.chainWithHistory.invoke(
+        : await this.chainWithHistory!.invoke(
             { input },
             { configurable: { sessionId: this.sessionId } }
           );

@@ -2,7 +2,6 @@
  * 可观测性系统类型定义
  * 包含 Langfuse 集成所需的所有类型
  */
-import type { Langfuse } from 'langfuse';
 
 /** 可观测性配置 */
 export interface ObservabilityConfig {
@@ -10,6 +9,48 @@ export interface ObservabilityConfig {
   publicKey: string;
   secretKey: string;
   host: string;
+}
+
+export interface CreatePromptOptions {
+  name: string;
+  prompt: string;
+  labels?: string[];
+  config?: { model: string };
+}
+
+export interface CreatePromptResult {
+  version: number;
+}
+
+export interface LangfusePromptGetOptions {
+  label?: string;
+  cacheTtlSeconds?: number;
+  fallback?: string;
+  maxRetries?: number;
+  type?: 'text';
+  fetchTimeoutMs?: number;
+}
+
+export interface LangfusePromptResult {
+  prompt: string;
+  version: number;
+}
+
+export interface LangfusePromptApi {
+  get(
+    name: string,
+    options: LangfusePromptGetOptions
+  ): Promise<LangfusePromptResult | null>;
+}
+
+export interface LangfuseCreatePromptApi {
+  createPrompt(options: CreatePromptOptions): Promise<CreatePromptResult>;
+}
+
+export interface LangfusePromptClient {
+  createPrompt(options: CreatePromptOptions): Promise<CreatePromptResult>;
+  prompt: LangfusePromptApi;
+  flushAsync(): Promise<void>;
 }
 
 /** Trace 上下文信息 */
@@ -70,7 +111,7 @@ export interface PricingFileConfig {
   filePath: string;
 }
 
-export type LangfuseClientType = Langfuse | null;
+export type LangfuseClientType = LangfusePromptClient | null;
 
 /** 可观测性上下文 */
 export interface ObservabilityContext {
@@ -86,4 +127,82 @@ export interface PromptTemplate {
   content: string;
   version?: string;
   labels?: string[];
+}
+
+/** Trace 方法接口 */
+export interface LangfuseTrace {
+  id: string;
+  span(params: {
+    id?: string;
+    name?: string;
+    input?: unknown;
+    metadata?: Record<string, unknown>;
+  }): LangfuseSpanClient;
+  generation(params: {
+    id?: string;
+    name?: string;
+    input?: unknown;
+    metadata?: Record<string, unknown>;
+    model?: string;
+  }): LangfuseGenerationClient;
+  update(params: {
+    output?: string;
+    metadata?: Record<string, unknown>;
+    level?: string;
+    statusMessage?: string;
+  }): void;
+}
+
+/** Span 方法接口 */
+export interface LangfuseSpanClient {
+  update(params: {
+    output?: unknown;
+    metadata?: Record<string, unknown>;
+    level?: string;
+    statusMessage?: string;
+  }): void;
+  end(params?: {
+    output?: unknown;
+    metadata?: Record<string, unknown>;
+    level?: string;
+    statusMessage?: string;
+  }): void;
+  id: string;
+  traceId: string;
+}
+
+/** Generation 方法接口（支持 usage/cost 详情） */
+export interface LangfuseGenerationClient {
+  update(params: {
+    output?: unknown;
+    metadata?: Record<string, unknown>;
+    level?: string;
+    statusMessage?: string;
+    usageDetails?: Record<string, number>;
+    costDetails?: Record<string, number>;
+    model?: string;
+  }): void;
+  end(params?: {
+    output?: unknown;
+    metadata?: Record<string, unknown>;
+    level?: string;
+    statusMessage?: string;
+    usageDetails?: Record<string, number>;
+    costDetails?: Record<string, number>;
+    model?: string;
+  }): void;
+  id: string;
+  traceId: string;
+}
+
+/** Langfuse 客户端只读接口 - 只包含实际使用的方法 */
+export interface LangfuseClient {
+  trace(params: {
+    id: string;
+    name?: string;
+    sessionId?: string;
+    userId?: string;
+    metadata?: Record<string, unknown>;
+    input?: unknown;
+  }): LangfuseTrace;
 }

@@ -2,11 +2,32 @@
  * Span 管理模块
  * 负责操作级别的追踪管理（LLM 调用、工具调用）
  */
-import type { Langfuse } from 'langfuse';
-
+import type { LangfuseSpanClient, LangfuseGenerationClient } from './types.js';
 import type { ObservabilityClient } from './langfuse-client.js';
 import type { SpanType, LLMUsage, CostCalculation } from './types.js';
 import { TraceManager } from './trace-manager.js';
+
+function buildUsageDetails(
+  usage?: LLMUsage
+): Record<string, number> | undefined {
+  if (!usage) return undefined;
+  return {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    total: usage.totalTokens,
+  };
+}
+
+function buildCostDetails(
+  cost?: CostCalculation
+): Record<string, number> | undefined {
+  if (!cost) return undefined;
+  return {
+    input: cost.inputCost,
+    output: cost.outputCost,
+    total: cost.totalCost,
+  };
+}
 
 /** 创建 Span 的选项 */
 export interface CreateSpanOptions {
@@ -34,13 +55,18 @@ export class SpanManager {
   private traceManager: TraceManager;
   private activeSpans: Map<
     string,
-    ReturnType<ReturnType<Langfuse['trace']>['span']>
+    | { kind: 'span'; client: LangfuseSpanClient }
+    | { kind: 'generation'; client: LangfuseGenerationClient }
   > = new Map();
   private spanStartTimes: Map<string, number> = new Map();
 
   constructor(client: ObservabilityClient, traceManager: TraceManager) {
     this.client = client;
     this.traceManager = traceManager;
+  }
+
+  getObservabilityClient(): ObservabilityClient {
+    return this.client;
   }
 
   /**
@@ -58,7 +84,11 @@ export class SpanManager {
       return null;
     }
 
-    const langfuseClient = this.client.getClient() as Langfuse;
+    const langfuseClient = this.client.getRawClient();
+    if (!langfuseClient) {
+      return null;
+    }
+
     const trace = langfuseClient.trace({ id: traceId });
 
     const spanId = this.generateSpanId(options.type);
@@ -74,7 +104,7 @@ export class SpanManager {
       },
     });
 
-    this.activeSpans.set(spanId, span);
+    this.activeSpans.set(spanId, { kind: 'span', client: span });
     this.spanStartTimes.set(spanId, startTime);
 
     return spanId;
@@ -90,8 +120,8 @@ export class SpanManager {
       return;
     }
 
-    const span = this.activeSpans.get(spanId);
-    if (!span) {
+    const active = this.activeSpans.get(spanId);
+    if (!active) {
       return;
     }
 
@@ -103,12 +133,12 @@ export class SpanManager {
       durationMs: duration,
     };
 
-    // 记录 Token 使用量
+    // 记录 Token 使用量（作为元数据保留，便于排查）
     if (options.usage) {
       metadata.usage = options.usage;
     }
 
-    // 记录成本
+    // 记录成本（作为元数据保留，便于排查）
     if (options.cost) {
       metadata.cost = options.cost;
     }
@@ -117,17 +147,37 @@ export class SpanManager {
     if (options.error) {
       metadata.error = options.error.message;
       metadata.errorStack = options.error.stack;
-      span.update({
-        output: options.output,
-        metadata,
-        level: 'ERROR',
-        statusMessage: options.error.message,
-      });
+      if (active.kind === 'generation') {
+        active.client.end({
+          output: options.output,
+          metadata,
+          level: 'ERROR',
+          statusMessage: options.error.message,
+          usageDetails: buildUsageDetails(options.usage),
+          costDetails: buildCostDetails(options.cost),
+        });
+      } else {
+        active.client.end({
+          output: options.output,
+          metadata,
+          level: 'ERROR',
+          statusMessage: options.error.message,
+        });
+      }
     } else {
-      span.update({
-        output: options.output,
-        metadata,
-      });
+      if (active.kind === 'generation') {
+        active.client.end({
+          output: options.output,
+          metadata,
+          usageDetails: buildUsageDetails(options.usage),
+          costDetails: buildCostDetails(options.cost),
+        });
+      } else {
+        active.client.end({
+          output: options.output,
+          metadata,
+        });
+      }
     }
 
     this.activeSpans.delete(spanId);
@@ -141,14 +191,54 @@ export class SpanManager {
    * @param model 模型名称
    */
   createLLMSpan(name: string, input: unknown, model?: string): string | null {
-    return this.createSpan({
+    if (!this.client.isEnabled()) {
+      return null;
+    }
+
+    const traceId = this.traceManager.getCurrentTraceId();
+    if (!traceId) {
+      return null;
+    }
+
+    const langfuseClient = this.client.getRawClient();
+    if (!langfuseClient) {
+      return null;
+    }
+
+    const trace = langfuseClient.trace({ id: traceId });
+
+    const spanId = this.generateSpanId('llm');
+    const startTime = Date.now();
+
+    if (typeof trace.generation === 'function') {
+      const generation = trace.generation({
+        id: spanId,
+        name,
+        input,
+        model,
+        metadata: {
+          type: 'llm',
+        },
+      });
+      this.activeSpans.set(spanId, { kind: 'generation', client: generation });
+      this.spanStartTimes.set(spanId, startTime);
+      return spanId;
+    }
+
+    // fallback: 旧版本 SDK 不支持 generation 时，退回到普通 span
+    const span = trace.span({
+      id: spanId,
       name,
-      type: 'llm',
       input,
       metadata: {
         model,
+        type: 'llm',
       },
     });
+
+    this.activeSpans.set(spanId, { kind: 'span', client: span });
+    this.spanStartTimes.set(spanId, startTime);
+    return spanId;
   }
 
   /**

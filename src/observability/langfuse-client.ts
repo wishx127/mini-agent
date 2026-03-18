@@ -2,9 +2,13 @@
  * Langfuse 客户端管理模块
  * 负责客户端初始化、配置管理和生命周期
  */
-import Langfuse from 'langfuse';
+import { Langfuse } from 'langfuse';
 
-import type { ObservabilityConfig, LangfuseClientType } from './types.js';
+import type {
+  ObservabilityConfig,
+  LangfuseClientType,
+  LangfuseClient,
+} from './types.js';
 
 const DEFAULT_LANGFUSE_HOST = 'https://cloud.langfuse.com';
 
@@ -23,30 +27,76 @@ export function createObservabilityConfig(): ObservabilityConfig {
   };
 }
 
+function createLangfuseInstance(config: {
+  publicKey: string;
+  secretKey: string;
+  baseUrl: string;
+}): LangfuseClient {
+  const langfuseInstance = new Langfuse({
+    publicKey: config.publicKey,
+    secretKey: config.secretKey,
+    baseUrl: config.baseUrl,
+  });
+  return langfuseInstance as LangfuseClient;
+}
+
 /** 创建 Langfuse 客户端实例 */
-export function createLangfuseClient(
-  config: ObservabilityConfig
-): LangfuseClientType {
+export function createLangfuseClient(config: ObservabilityConfig): {
+  wrapped: LangfuseClientType;
+  raw: LangfuseClient | null;
+} {
   if (!config.enabled) {
     console.log('📊 [Observability] Langfuse 未启用或配置缺失，跳过初始化');
-    return null;
+    return { wrapped: null, raw: null };
   }
 
   try {
-    const client = new Langfuse({
+    const langfuseClient = createLangfuseInstance({
       publicKey: config.publicKey,
       secretKey: config.secretKey,
       baseUrl: config.host,
     });
 
     console.log('✅ [Observability] Langfuse 客户端初始化成功');
-    return client;
+
+    const wrappedClient: LangfuseClientType = {
+      createPrompt: async (options) => {
+        const result = await (
+          langfuseClient as unknown as {
+            createPrompt(options: unknown): Promise<{ version: number }>;
+          }
+        ).createPrompt(options);
+        return { version: result.version };
+      },
+      prompt: {
+        get: async (name, options) => {
+          const result = await (
+            langfuseClient as unknown as {
+              getPrompt(
+                name: string,
+                version: unknown,
+                options?: unknown
+              ): Promise<{ prompt: string; version: number } | null>;
+            }
+          ).getPrompt(name, undefined, options);
+          if (!result) return null;
+          return { prompt: result.prompt, version: result.version };
+        },
+      },
+      flushAsync: async () => {
+        await (
+          langfuseClient as unknown as { flushAsync(): Promise<void> }
+        ).flushAsync();
+      },
+    };
+
+    return { wrapped: wrappedClient, raw: langfuseClient };
   } catch (error) {
     console.error(
       '❌ [Observability] Langfuse 客户端初始化失败:',
       error instanceof Error ? error.message : '未知错误'
     );
-    return null;
+    return { wrapped: null, raw: null };
   }
 }
 
@@ -56,11 +106,14 @@ export function createLangfuseClient(
  */
 export class ObservabilityClient {
   private client: LangfuseClientType;
+  private rawClient: LangfuseClient | null;
   private config: ObservabilityConfig;
 
   constructor(config?: ObservabilityConfig) {
     this.config = config ?? createObservabilityConfig();
-    this.client = createLangfuseClient(this.config);
+    const result = createLangfuseClient(this.config);
+    this.client = result.wrapped;
+    this.rawClient = result.raw;
   }
 
   /** 检查可观测性是否启用 */
@@ -71,6 +124,11 @@ export class ObservabilityClient {
   /** 获取 Langfuse 客户端实例 */
   getClient(): LangfuseClientType {
     return this.client;
+  }
+
+  /** 获取原始 Langfuse 客户端实例（用于 trace/span 操作） */
+  getRawClient(): LangfuseClient | null {
+    return this.rawClient;
   }
 
   /** 获取当前配置 */

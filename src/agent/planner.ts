@@ -17,6 +17,7 @@ import {
   SpanManager,
   calculateCost,
   createDisabledObservabilityClient,
+  PromptManager,
   type LLMUsage,
 } from '../observability/index.js';
 import { TraceManager } from '../observability/trace-manager.js';
@@ -44,6 +45,7 @@ export class Planner {
   private toolRegistry: ToolRegistry;
   private spanManager: SpanManager;
   private modelName: string;
+  private promptManager: PromptManager;
 
   constructor(
     llm: ChatOpenAI,
@@ -55,6 +57,9 @@ export class Planner {
     this.toolRegistry = toolRegistry;
     this.spanManager = spanManager ?? createDefaultSpanManager();
     this.modelName = modelName ?? 'gpt-3.5-turbo';
+    this.promptManager = new PromptManager(
+      this.spanManager.getObservabilityClient()
+    );
   }
 
   /**
@@ -185,7 +190,7 @@ export class Planner {
     try {
       const langChainTools = this.toolRegistry.getLangChainTools();
       const llmWithTools = this.llm.bindTools(langChainTools);
-      const messages = this.buildDecisionMessages(
+      const messages = await this.buildDecisionMessages(
         prompt,
         conversationHistory,
         tools
@@ -332,28 +337,33 @@ export class Planner {
   /**
    * 构建决策消息
    */
-  private buildDecisionMessages(
+  private async buildDecisionMessages(
     prompt: string,
     conversationHistory: ConversationMessage[],
     tools: ToolInfo[]
-  ): Array<HumanMessage | SystemMessage | AIMessage> {
+  ): Promise<Array<HumanMessage | SystemMessage | AIMessage>> {
     const messages: Array<HumanMessage | SystemMessage | AIMessage> = [];
 
     // 系统消息
     const toolDescriptions = tools
       .map((t) => `- ${t.name}: ${t.description}`)
       .join('\n');
-    messages.push(
-      new SystemMessage(
-        `你是一个智能助手，可以决定是否使用工具来回答用户问题。
+
+    const systemPromptResult = await this.promptManager.getCompiledPrompt(
+      'planner-decision',
+      { tool_descriptions: toolDescriptions }
+    );
+
+    const defaultSystemPrompt = `你是一个智能助手，可以决定是否使用工具来回答用户问题。
 
 可用工具:
 ${toolDescriptions}
 
 如果用户的问题需要实时信息或外部数据，请使用合适的工具。
-如果问题可以直接回答，请不要使用工具。`
-      )
-    );
+如果问题可以直接回答，请不要使用工具。`;
+
+    const systemPrompt = systemPromptResult?.content ?? defaultSystemPrompt;
+    messages.push(new SystemMessage(systemPrompt));
 
     // 对话历史
     for (const msg of conversationHistory) {

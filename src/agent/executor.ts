@@ -140,7 +140,6 @@ export class Executor {
     const tool = this.toolRegistry.getTool(toolCall.toolName);
 
     console.log(`⚡ [Executor] 执行工具: ${toolCall.toolName}`);
-    console.log(`   参数: ${JSON.stringify(toolCall.arguments)}`);
 
     // 获取工具级超时或使用默认超时
     const timeout = tool?.timeout || this.config.toolTimeout;
