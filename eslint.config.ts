@@ -26,6 +26,21 @@ const baseConfig = {
   ...js.configs.recommended,
 };
 
+/** Node.js 脚本配置 */
+const nodeScriptConfig = {
+  files: ['scripts/**/*.{js,mjs,cjs}'],
+  languageOptions: {
+    globals: {
+      console: 'readonly',
+      process: 'readonly',
+      require: 'readonly',
+      __dirname: 'readonly',
+      module: 'readonly',
+      exports: 'readonly',
+    },
+  },
+};
+
 /** TypeScript 配置（带类型感知，仅限 src/ 目录） */
 const tsConfig = tseslint.config(
   {
@@ -135,6 +150,7 @@ const reactExtensionConfig = {
 export default [
   globalIgnores,
   baseConfig,
+  nodeScriptConfig,
   ...tsConfig,
   googleStyleConfig,
   importConfig,
