@@ -4,22 +4,22 @@ import { ModelConfig } from '../types/model-config.js';
 import { ControlConfig } from '../types/agent.js';
 import type { VectorDatabaseConfig } from '../types/memory.js';
 import { ToolRegistry, toolLoader } from '../tools/index.js';
+// 可观测性系统导入
+import {
+  ObservabilityClient,
+  TraceManager,
+  SpanManager,
+  PromptManager,
+  type ObservabilityConfig,
+} from '../observability/index.js';
 
 import { Controller } from './controller.js';
 import { Planner } from './planner.js';
 import { Executor } from './executor.js';
 
 /**
- * AgentCore - Agent 系统核心门面类
- *
- * 集成 Planner、Executor、Controller 三个编排模块，
- * 提供统一的对外接口。
- *
- * 架构:
- * AgentCore (Facade)
- *   └── Controller (控制入口)
- *         ├── Planner (决策)
- *         └── Executor (执行)
+ * Agent 核心类
+ * 负责协调 LLM、工具、记忆和可观测性系统
  */
 export class AgentCore {
   private llm: ChatOpenAI;
@@ -28,14 +28,35 @@ export class AgentCore {
   private controller: Controller;
   private planner: Planner;
   private executor: Executor;
+  /** 可观测性客户端 */
+  private observabilityClient: ObservabilityClient;
+  /** Trace 管理器 */
+  private traceManager: TraceManager;
+  /** Span 管理器 */
+  private spanManager: SpanManager;
+  /** Prompt 管理器 */
+  private promptManager: PromptManager;
 
   constructor(config: ModelConfig) {
     this.config = config;
     this.llm = this.initializeLLM();
     this.toolRegistry = this.initializeToolRegistry();
+
+    // 初始化可观测性系统
+    this.observabilityClient = this.initializeObservability();
+    this.traceManager = new TraceManager(this.observabilityClient);
+    this.spanManager = new SpanManager(
+      this.observabilityClient,
+      this.traceManager
+    );
+    this.promptManager = new PromptManager(this.observabilityClient);
+
     this.planner = this.initializePlanner();
     this.executor = this.initializeExecutor();
     this.controller = this.initializeController();
+
+    // 注册系统 Prompt 模板到 Langfuse
+    void this.registerPrompts();
   }
 
   // ==================== 初始化 ====================
@@ -72,11 +93,47 @@ export class AgentCore {
     return registry;
   }
 
-  /**
-   * 初始化 Planner 模块
-   */
+  /** 初始化可观测性客户端 */
+  private initializeObservability(): ObservabilityClient {
+    const observabilityConfig = this.getObservabilityConfig();
+    return new ObservabilityClient(observabilityConfig);
+  }
+
+  /** 获取可观测性配置 */
+  private getObservabilityConfig(): ObservabilityConfig {
+    const options = this.config.observability;
+
+    const enabled =
+      options?.enabled ?? process.env.LANGFUSE_ENABLED !== 'false';
+    const publicKey =
+      options?.publicKey ?? process.env.LANGFUSE_PUBLIC_KEY ?? '';
+    const secretKey =
+      options?.secretKey ?? process.env.LANGFUSE_SECRET_KEY ?? '';
+    const host =
+      options?.host ??
+      process.env.LANGFUSE_HOST ??
+      'https://cloud.langfuse.com';
+
+    return {
+      enabled: enabled && !!publicKey && !!secretKey,
+      publicKey,
+      secretKey,
+      host,
+    };
+  }
+
+  /** 注册系统 Prompt 模板 */
+  private async registerPrompts(): Promise<void> {
+    await this.promptManager.registerSystemPrompts();
+  }
+
   private initializePlanner(): Planner {
-    return new Planner(this.llm, this.toolRegistry);
+    return new Planner(
+      this.llm,
+      this.toolRegistry,
+      this.spanManager,
+      this.config.modelName
+    );
   }
 
   /**
@@ -84,7 +141,7 @@ export class AgentCore {
    */
   private initializeExecutor(): Executor {
     const controlConfig = this.getControlConfig();
-    return new Executor(this.toolRegistry, controlConfig);
+    return new Executor(this.toolRegistry, controlConfig, this.spanManager);
   }
 
   /**
@@ -97,7 +154,10 @@ export class AgentCore {
       this.llm,
       this.toolRegistry,
       controlConfig,
-      vectorDbConfig
+      vectorDbConfig,
+      this.traceManager,
+      this.spanManager,
+      this.config.modelName
     );
   }
 
@@ -233,5 +293,20 @@ export class AgentCore {
    */
   getExecutor(): Executor {
     return this.executor;
+  }
+
+  /** 获取可观测性客户端 */
+  getObservabilityClient(): ObservabilityClient {
+    return this.observabilityClient;
+  }
+
+  /** 检查可观测性是否启用 */
+  isObservabilityEnabled(): boolean {
+    return this.observabilityClient.isEnabled();
+  }
+
+  /** 刷新可观测性数据到 Langfuse */
+  async flushObservability(): Promise<void> {
+    await this.observabilityClient.flush();
   }
 }

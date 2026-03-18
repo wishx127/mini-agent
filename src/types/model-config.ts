@@ -38,6 +38,7 @@ export interface ModelConfig {
    * 长期记忆配置
    */
   longTermMemory?: LongTermMemoryOptions;
+  observability?: ObservabilityOptions;
 }
 
 /**
@@ -171,3 +172,10 @@ export const DEFAULT_MODEL_CONFIG: Partial<ModelConfig> = {
   temperature: 0.7,
   maxTokens: 2048,
 };
+
+export interface ObservabilityOptions {
+  enabled?: boolean;
+  publicKey?: string;
+  secretKey?: string;
+  host?: string;
+}

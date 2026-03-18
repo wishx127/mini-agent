@@ -1,10 +1,12 @@
 import type { UsageMetadata } from '@langchain/core/messages';
 
+import { calculateCost, type LLMUsage } from '../../observability/index.js';
+
 import type { CostRecord, CostSummary } from './types.js';
 
 /**
- * CostTracker - 从 LLM 响应的 usageMetadata 读取并累计 token 消耗
- * 成本单价换算暂不实现，totalCost 固定为 0
+ * CostTracker - 从 LLM 响应的 usageMetadata 读取并累计 token 消耗和成本
+ * 需要在项目根目录创建 pricing.json 配置文件
  */
 export class CostTracker {
   private records: CostRecord[] = [];
@@ -13,6 +15,17 @@ export class CostTracker {
 
   record(usageMetadata: UsageMetadata | undefined, model?: string): void {
     if (!usageMetadata) return;
+
+    const usage: LLMUsage = {
+      inputTokens: usageMetadata.input_tokens ?? 0,
+      outputTokens: usageMetadata.output_tokens ?? 0,
+      totalTokens: usageMetadata.total_tokens ?? 0,
+    };
+
+    const costCalculation = model
+      ? calculateCost(usage, model)
+      : { inputCost: 0, outputCost: 0, totalCost: 0, currency: 'USD' };
+
     this.records.push({
       usage: {
         input_tokens: usageMetadata.input_tokens,
@@ -21,7 +34,10 @@ export class CostTracker {
       },
       model,
       timestamp: Date.now(),
-      cost: 0,
+      cost: costCalculation.totalCost,
+      inputCost: costCalculation.inputCost,
+      outputCost: costCalculation.outputCost,
+      currency: costCalculation.currency,
     });
   }
 
@@ -32,15 +48,24 @@ export class CostTracker {
         totalOutputTokens: 0,
         totalTokens: 0,
         totalCost: 0,
+        totalInputCost: 0,
+        totalOutputCost: 0,
+        currency: 'USD',
         requestCount: 0,
       };
     }
+
+    const firstCurrency = this.records[0].currency || 'USD';
+
     return this.records.reduce(
       (acc, r) => ({
         totalInputTokens: acc.totalInputTokens + r.usage.input_tokens,
         totalOutputTokens: acc.totalOutputTokens + r.usage.output_tokens,
         totalTokens: acc.totalTokens + r.usage.total_tokens,
-        totalCost: 0,
+        totalCost: acc.totalCost + (r.cost || 0),
+        totalInputCost: acc.totalInputCost + (r.inputCost || 0),
+        totalOutputCost: acc.totalOutputCost + (r.outputCost || 0),
+        currency: r.currency || firstCurrency,
         requestCount: acc.requestCount + 1,
       }),
       {
@@ -48,6 +73,9 @@ export class CostTracker {
         totalOutputTokens: 0,
         totalTokens: 0,
         totalCost: 0,
+        totalInputCost: 0,
+        totalOutputCost: 0,
+        currency: firstCurrency,
         requestCount: 0,
       }
     );
