@@ -24,10 +24,11 @@ import {
   ExecutionStatus,
   FallbackResult,
   ToolExecutionResult,
-  PlanningContext,
   ToolInfo,
   ConversationMessage,
   TokenStatus,
+  ExecutionResult,
+  TerminationReason,
 } from '../types/agent.js';
 import type { VectorDatabaseConfig } from '../types/memory.js';
 import { ToolRegistry } from '../tools/index.js';
@@ -40,13 +41,10 @@ import {
   type LLMUsage,
 } from '../observability/index.js';
 
-import { Planner } from './planner.js';
-import { Executor } from './executor.js';
 import {
   SessionStore,
   CostTracker,
   createTrimmer,
-  runTokenPreflight,
   getTokenStatus,
   VectorDatabaseClient,
   LongTermMemoryReader,
@@ -67,8 +65,6 @@ export class Controller {
   private config: ControlConfig;
   private metrics: ExecutionMetrics;
   private state: ExecutionState = 'idle';
-  private planner: Planner;
-  private executor: Executor;
   private llm: ChatOpenAI;
   private toolRegistry: ToolRegistry;
   private sessionStore: SessionStore;
@@ -105,13 +101,6 @@ export class Controller {
     this.promptManager = new PromptManager(
       this.spanManager.getObservabilityClient()
     );
-    this.planner = new Planner(
-      llm,
-      toolRegistry,
-      this.spanManager,
-      this.modelName
-    );
-    this.executor = new Executor(toolRegistry, this.config, this.spanManager);
     this.metrics = this.initMetrics();
     // 初始化 startTime，避免 checkTimeout() 在 execute() 前调用时返回错误结果
     this.metrics.startTime = Date.now();
@@ -252,11 +241,24 @@ export class Controller {
 
   /**
    * 主入口 - 执行编排流程
+   * 使用 ExecutionEngine 实现 PLAN→ACT→OBSERVE→REFLECT 模式
    */
-  async execute(prompt: string): Promise<string> {
+  async execute(
+    prompt: string,
+    options?: {
+      maxIterations?: number;
+      maxExecutionTime?: number;
+      toolTimeout?: number;
+    }
+  ): Promise<ExecutionResult> {
     // 边缘情况处理
     if (!prompt || prompt.trim().length === 0) {
-      return '输入不能为空';
+      return {
+        finalAnswer: '输入不能为空',
+        success: false,
+        metrics: this.initMetrics(),
+        error: '输入不能为空',
+      };
     }
 
     // 初始化执行状态
@@ -267,143 +269,104 @@ export class Controller {
     const traceId = this.traceManager.generateTraceId();
     this.traceManager.createTrace({
       traceId,
-      name: 'conversation',
+      name: 'conversation-engine',
       sessionId: this.sessionId,
       input: prompt,
     });
 
-    let result = '';
-    let longTermMemoryContext = '';
-
     try {
-      if (this.longTermMemoryReader) {
-        const memories = await this.longTermMemoryReader.search(prompt);
-
-        if (memories.length > 0) {
-          longTermMemoryContext =
-            this.longTermMemoryReader.formatMemoriesForPrompt(memories);
-        }
-      }
-    } catch {
-      // 检索失败继续流程
-      longTermMemoryContext = '';
-    }
-
-    try {
-      // Token 预检：加载当前历史 + 新 prompt，超限时裁剪历史
-      const historyStore = this.sessionStore.getOrCreate(this.sessionId);
-      const historyMessages = await historyStore.getMessages();
-      const allMessages: BaseMessage[] = [
-        ...historyMessages,
-        new HumanMessage(prompt),
-      ];
-      const trimmedMessages = await runTokenPreflight(
-        allMessages,
-        this.config.maxTokens
-      );
-
-      // 若发生裁剪，将裁剪后的历史写回 SessionStore
-      if (trimmedMessages.length < allMessages.length) {
-        await this.sessionStore.clear(this.sessionId);
-        // 最后一条是当前 HumanMessage，不写回（由 chainWithHistory 自动管理）
-        const trimmedHistory = trimmedMessages.slice(
-          0,
-          trimmedMessages.length - 1
-        );
-        for (const msg of trimmedHistory) {
-          await historyStore.addMessage(msg);
-        }
-      }
-
-      // 准备对话历史（供 Planner 判定使用）
-      const updatedHistoryMessages = await historyStore.getMessages();
-      const conversationHistory = this.toConversationHistory(
-        updatedHistoryMessages
-      );
-
-      // 检查是否有可用工具
+      // 获取可用工具
       const enabledTools = this.toolRegistry.getEnabledTools();
-      if (enabledTools.length === 0) {
-        result = await this.llmResponseWithHistory(
-          prompt,
-          longTermMemoryContext
-        );
-        return result;
-      }
+      const toolInfos = this.getAvailableToolsInfo(enabledTools);
 
-      // 工具调用循环
-      for (
-        let iteration = 0;
-        iteration < this.config.maxIterations;
-        iteration++
-      ) {
-        // 检查超时
-        if (this.checkTimeout()) {
-          result = this.fallback('timeout');
-          return result;
-        }
+      // 创建执行引擎配置
+      const engineConfig = {
+        maxIterations: options?.maxIterations ?? this.config.maxIterations,
+        maxExecutionTime: options?.maxExecutionTime ?? this.config.timeout,
+        toolTimeout: options?.toolTimeout ?? this.config.toolTimeout,
+        maxWorkingMemorySize: 10,
+        maxToolMemorySize: 100,
+        summaryTriggerRound: 5,
+        summaryTriggerTokens: 8000,
+        tokenThreshold: 0.9,
+        maxRetryPerTool: 3,
+        enableParallelExecution: true,
+      };
 
-        this.metrics.iterationCount = iteration + 1;
+      // 导入 ExecutionEngine
+      const { ExecutionEngine } = await import('./execution/index.js');
 
-        // 规划阶段
-        const planningContext: PlanningContext = {
-          prompt,
-          conversationHistory,
-          availableTools: this.getAvailableToolsInfo(enabledTools),
-        };
+      // 创建执行引擎
+      const engine = new ExecutionEngine(engineConfig, {
+        llm: this.llm,
+        tools: toolInfos,
+        generateSummary: async (messages) => {
+          // 使用 LLM 生成摘要
+          const messagesText = messages
+            .map((m) => `${m.role}: ${m.content}`)
+            .join('\n');
+          const summaryPrompt = `请为以下对话生成一个简洁的摘要：\n${messagesText}`;
+          const response = await this.llm.invoke(summaryPrompt);
+          return typeof response.content === 'string'
+            ? response.content
+            : JSON.stringify(response.content);
+        },
+        executeTool: async (toolName, args) => {
+          try {
+            const tool = this.toolRegistry.getTool(toolName);
+            if (!tool) {
+              return `工具 ${toolName} 不存在`;
+            }
+            const result = await tool.run(args);
+            return typeof result === 'string' ? result : JSON.stringify(result);
+          } catch (error) {
+            const errorMsg =
+              error instanceof Error ? error.message : '未知错误';
+            return `工具执行失败: ${errorMsg}`;
+          }
+        },
+        longTermMemoryReader: this.longTermMemoryReader ?? undefined,
+      });
 
-        const plan = await this.planner.plan(planningContext);
+      // 执行引擎
+      const { finalAnswer, metrics } = await engine.run(prompt);
 
-        // 如果不需要工具，直接获取 LLM 响应（历史由 chainWithHistory 自动管理）
-        if (!plan.needsTool || plan.toolCalls.length === 0) {
-          result = await this.llmResponseWithHistory(
-            prompt,
-            longTermMemoryContext
-          );
-          return result;
-        }
+      // 更新状态
+      this.state = 'completed';
+      this.metrics.endTime = Date.now();
+      this.metrics.totalDuration =
+        this.metrics.endTime - this.metrics.startTime;
 
-        // 执行阶段
-        const toolResults: ToolExecutionResult[] =
-          await this.executor.execute(plan);
+      // 映射终止原因
+      const terminationReason = this.mapTerminationReason(
+        metrics.terminationReason
+      );
 
-        // 更新指标
-        this.updateMetrics(toolResults);
+      // 触发记忆提取（异步，不阻塞返回）
+      void this.extractLongTermMemoryAsync(prompt, finalAnswer);
 
-        // 处理执行结果
-        const allFailed = toolResults.every((r) => !r.success);
-        if (allFailed) {
-          result = await this.llmResponseWithHistory(
-            prompt,
-            longTermMemoryContext
-          );
-          return result;
-        }
-
-        // 将工具结果注入 prompt，然后获取最终 LLM 响应
-        const toolContext = toolResults
-          .map((r) => `[工具: ${r.toolName}]\n${r.result}`)
-          .join('\n\n');
-        const finalInput = `${prompt}\n\n以下是工具执行结果，请基于这些结果回答用户的问题：\n\n${toolContext}`;
-        result = await this.llmResponseWithHistory(
-          finalInput,
-          longTermMemoryContext
-        );
-        return result;
-      }
-
-      result = this.fallback('iteration_exceeded');
-      return result;
+      return {
+        finalAnswer,
+        success: true,
+        metrics: this.metrics,
+        terminationReason,
+      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       this.state = 'failed';
       this.metrics.endTime = Date.now();
       this.metrics.totalDuration =
         this.metrics.endTime - this.metrics.startTime;
-      result = `处理过程中发生错误: ${errorMessage}`;
-      return result;
+
+      return {
+        finalAnswer: `处理过程中发生错误: ${errorMessage}`,
+        success: false,
+        metrics: this.metrics,
+        error: errorMessage,
+        terminationReason: 'fallback',
+      };
     } finally {
-      this.traceManager.endTrace(result);
+      this.traceManager.endTrace(this.state);
     }
   }
 
@@ -701,5 +664,64 @@ export class Controller {
    */
   getMemoryDispatcher(): MemoryDispatcher | null {
     return this.memoryDispatcher;
+  }
+
+  /**
+   * 映射终止原因到新的 TerminationReason 类型
+   */
+  private mapTerminationReason(reason?: string): TerminationReason {
+    if (!reason) {
+      return 'completed';
+    }
+
+    const reasonMap: Record<string, TerminationReason> = {
+      planner_final: 'planner_final',
+      no_information_growth: 'no_information_growth',
+      max_iterations: 'max_iterations',
+      token_budget_exceeded: 'token_budget_exceeded',
+      execution_timeout: 'execution_timeout',
+      failure_budget_exhausted: 'failure_budget_exhausted',
+      final_answer: 'final_answer',
+      fallback: 'fallback',
+    };
+
+    return reasonMap[reason] || 'completed';
+  }
+
+  /**
+   * 获取执行引擎配置
+   */
+  getEngineConfig() {
+    return {
+      maxIterations: this.config.maxIterations,
+      maxExecutionTime: this.config.timeout,
+      toolTimeout: this.config.toolTimeout,
+      tokenThreshold: this.config.tokenThreshold,
+    };
+  }
+
+  /**
+   * 更新执行引擎配置
+   */
+  updateEngineConfig(
+    config: Partial<{
+      maxIterations: number;
+      maxExecutionTime: number;
+      toolTimeout: number;
+      tokenThreshold: number;
+    }>
+  ) {
+    if (config.maxIterations !== undefined) {
+      this.config.maxIterations = config.maxIterations;
+    }
+    if (config.maxExecutionTime !== undefined) {
+      this.config.timeout = config.maxExecutionTime;
+    }
+    if (config.toolTimeout !== undefined) {
+      this.config.toolTimeout = config.toolTimeout;
+    }
+    if (config.tokenThreshold !== undefined) {
+      this.config.tokenThreshold = config.tokenThreshold;
+    }
   }
 }

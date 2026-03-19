@@ -225,7 +225,8 @@ export class AgentCore {
    */
   async processPrompt(prompt: string): Promise<string> {
     try {
-      return await this.controller.execute(prompt);
+      const result = await this.controller.execute(prompt);
+      return result.finalAnswer;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error(`❌ [AgentCore] 处理错误: ${errorMessage}`);

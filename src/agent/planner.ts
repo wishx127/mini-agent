@@ -7,7 +7,6 @@ import {
 
 import {
   ExecutionPlan,
-  PlanningContext,
   ToolCallDetail,
   ToolInfo,
   ConversationMessage,
@@ -22,7 +21,9 @@ import {
 } from '../observability/index.js';
 import { TraceManager } from '../observability/trace-manager.js';
 
-const SEARCH_KEYWORDS = [
+import type { PlanningContext, Plan, PlanStep } from './execution/types.js';
+
+const SEARCH_KEYWORDS: string[] = [
   '搜索',
   '查询',
   '联网',
@@ -65,22 +66,33 @@ export class Planner {
   /**
    * 规划执行计划
    */
-  async plan(context: PlanningContext): Promise<ExecutionPlan> {
-    const { prompt, conversationHistory, availableTools } = context;
+  async plan(context: PlanningContext): Promise<Plan> {
+    const prompt = context.userPrompt;
+    const conversationHistory = context.workingMemory.map((m) => ({
+      role: m.role,
+      content: m.content,
+      toolCallId: m.toolCallId,
+      toolName: m.toolName,
+    }));
+    const availableTools = context.availableTools;
 
-    // 过滤出启用的工具
     const enabledTools = availableTools.filter((t) => t.enabled);
 
-    // 没有可用工具
+    console.log('[Planner] 开始规划');
+    console.log(`[Planner] 可用工具数量: ${enabledTools.length}`);
+    console.log(`[Planner] 用户提示: ${prompt.substring(0, 50)}...`);
+
     if (enabledTools.length === 0) {
-      return {
-        needsTool: false,
-        toolCalls: [],
+      const result: Plan = {
+        steps: [],
+        overallConfidence: 0,
         reasoning: '没有可用的工具',
+        isFinalAnswer: true,
       };
+      console.log('[Planner] 没有可用工具，直接返回');
+      return result;
     }
 
-    // 尝试 LLM 决策
     try {
       const llmPlan = await this.llmDecision(
         prompt,
@@ -88,22 +100,101 @@ export class Planner {
         enabledTools
       );
       if (llmPlan) {
-        // 若 LLM 判断不需要工具，但规则认为需要，则强制进入兜底
         if (!llmPlan.needsTool && this.shouldUseTool(prompt)) {
-          return this.ruleBasedFallback(
+          const fallback = this.ruleBasedFallback(
             prompt,
             enabledTools,
             conversationHistory
           );
+          console.log(
+            '[Planner] LLM 判断不需要工具，但规则认为需要，使用兜底策略'
+          );
+          return this.convertToNewPlanFormat(fallback);
         }
-        return llmPlan;
+        console.log(
+          `[Planner] LLM 决策: 需要工具=${llmPlan.needsTool}, 工具数量=${llmPlan.toolCalls.length}`
+        );
+        return this.convertToNewPlanFormat(llmPlan);
       }
     } catch {
       console.log('🔄 [Planner] LLM 决策失败，启用规则兜底策略');
     }
 
-    // 规则兜底
-    return this.ruleBasedFallback(prompt, enabledTools, conversationHistory);
+    const fallback = this.ruleBasedFallback(
+      prompt,
+      enabledTools,
+      conversationHistory
+    );
+    console.log(
+      `[Planner] 兜底策略: 需要工具=${fallback.needsTool}, 工具数量=${fallback.toolCalls.length}`
+    );
+    return this.convertToNewPlanFormat(fallback);
+  }
+
+  private convertToNewPlanFormat(executionPlan: ExecutionPlan): Plan {
+    const steps: PlanStep[] = executionPlan.toolCalls.map((tc, index) => ({
+      id: tc.toolCallId || `step_${index}`,
+      toolName: tc.toolName,
+      arguments: tc.arguments || {},
+      dependsOn: [],
+      confidence: 0.8,
+      reasoning: executionPlan.reasoning,
+    }));
+
+    const plan: Plan = {
+      steps,
+      overallConfidence: executionPlan.needsTool ? 0.8 : 0.0,
+      reasoning: executionPlan.reasoning,
+      isFinalAnswer: !executionPlan.needsTool,
+    };
+
+    return this.validatePlanDependencies(plan);
+  }
+
+  private validatePlanDependencies(plan: Plan): Plan {
+    const stepIds = new Set(plan.steps.map((s) => s.id));
+    const validSteps = plan.steps.filter((step) => {
+      const validDeps = step.dependsOn.filter((depId) => stepIds.has(depId));
+      if (validDeps.length !== step.dependsOn.length) {
+        return false;
+      }
+      if (this.hasCircularDependency(plan.steps, step.id, new Set())) {
+        return false;
+      }
+      return true;
+    });
+
+    if (validSteps.length !== plan.steps.length) {
+      return {
+        ...plan,
+        steps: validSteps,
+        overallConfidence: plan.overallConfidence * 0.5,
+        reasoning: `${plan.reasoning || ''} [警告: 无效依赖已移除]`,
+      };
+    }
+
+    return plan;
+  }
+
+  private hasCircularDependency(
+    steps: PlanStep[],
+    stepId: string,
+    visited: Set<string>
+  ): boolean {
+    if (visited.has(stepId)) {
+      return true;
+    }
+    visited.add(stepId);
+    const step = steps.find((s) => s.id === stepId);
+    if (!step) {
+      return false;
+    }
+    for (const depId of step.dependsOn) {
+      if (this.hasCircularDependency(steps, depId, new Set(visited))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

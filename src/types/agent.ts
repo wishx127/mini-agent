@@ -161,6 +161,8 @@ export interface ControlConfig {
   longTermMemoryTopK?: number;
   /** 记忆提取置信度阈值 */
   memoryExtractionThreshold?: number;
+  /** 是否输出详细日志 */
+  verbose?: boolean;
 }
 
 /**
@@ -168,14 +170,15 @@ export interface ControlConfig {
  */
 export const DEFAULT_CONTROL_CONFIG: ControlConfig = {
   maxTokens: 6000,
-  maxIterations: 3,
-  timeout: 30000,
+  maxIterations: 10,
+  timeout: 180000,
   tokenThreshold: 0.9,
   toolTimeout: 30000,
   maxResultLength: 4000,
   enableLongTermMemory: false,
   longTermMemoryTopK: 5,
   memoryExtractionThreshold: 0.7,
+  verbose: false,
 };
 
 /**
@@ -222,18 +225,6 @@ export interface ExecutionStatus {
   metrics: ExecutionMetrics;
   /** 错误信息（如果有） */
   error?: string;
-}
-
-/**
- * 规划上下文
- */
-export interface PlanningContext {
-  /** 用户提示 */
-  prompt: string;
-  /** 对话历史 */
-  conversationHistory: ConversationMessage[];
-  /** 可用工具 */
-  availableTools: ToolInfo[];
 }
 
 /**
@@ -295,6 +286,36 @@ export const DEFAULT_RETRY_STRATEGIES: Record<ErrorType, RetryStrategy> = {
     delays: [1000], // 重试一次
   },
 };
+
+/**
+ * 终止原因类型
+ */
+export type TerminationReason =
+  | 'planner_final'
+  | 'no_information_growth'
+  | 'max_iterations'
+  | 'token_budget_exceeded'
+  | 'execution_timeout'
+  | 'failure_budget_exhausted'
+  | 'final_answer'
+  | 'fallback'
+  | 'completed';
+
+/**
+ * 执行结果（增强版，支持新引擎）
+ */
+export interface ExecutionResult {
+  /** 最终答案 */
+  finalAnswer: string;
+  /** 执行是否成功 */
+  success: boolean;
+  /** 执行指标 */
+  metrics: ExecutionMetrics;
+  /** 终止原因 */
+  terminationReason?: TerminationReason;
+  /** 错误信息（如果有） */
+  error?: string;
+}
 
 /**
  * 兜底策略结果

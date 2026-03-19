@@ -5,14 +5,19 @@
 ## 功能特性
 
 - 🤖 基于LangChain的Agent核心
+- 🚀 全新执行引擎 - 基于状态机的 ExecutionEngine，支持 OBSERVE → PLAN → ACT → REFLECT 循环
 - 🔧 支持自定义模型baseURL
 - 🛠️ 支持工具调用
+- ⚡ 并行工具执行 - 自动识别可并行步骤，大幅提升执行效率
 - 🔍 内置联网搜索
 - 💬 交互式命令行对话
 - 🧠 跨请求会话记忆 - 基于 `RunnableWithMessageHistory` 的多轮对话上下文保持
 - 💾 长期记忆系统 - 基于向量数据库的持久化记忆，支持跨会话记忆用户偏好和重要信息
 - 📊 Token 管理 - 自动 token 预检与 `trimMessages` 滑动窗口裁剪
 - 📈 可观测性系统 - 接入 Langfuse 平台，支持 Trace/Span 追踪、Token 统计、成本统计和 Prompt 版本管理
+- 🧠 智能反思系统 - 多维度决策框架，支持 continue/retry/finalize/fallback 策略
+- 🔁 工具去重 - 输入哈希去重，避免重复调用浪费资源
+- 📏 语义终止条件 - 基于信息增长、Token 预算、超时等多种终止条件
 - 📝 环境变量和.env配置文件支持
 - 🔒 TypeScript类型安全
 - 🛡️ 熔断器保护 - 自动熔断故障工具,防止资源浪费
@@ -232,6 +237,15 @@ src/
 │   ├── controller.ts    # 控制层
 │   ├── planner.ts       # 决策层
 │   ├── executor.ts      # 执行层
+│   ├── core.ts          # 核心执行器（集成 ExecutionEngine）
+│   └── execution/       # 🆕 执行引擎系统
+│       ├── engine.ts         # 状态机主循环（OBSERVE → PLAN → ACT → REFLECT）
+│       ├── types.ts          # 类型定义（ExecutionPhase, ReflectionResult 等）
+│       ├── reflector.ts      # 智能反思器（多维度决策框架）
+│       ├── planner-adapter.ts # 规划器适配层（新旧格式兼容）
+│       ├── parallel-executor.ts # 并行工具执行器（依赖图解析）
+│       ├── index.ts          # 统一导出
+│       └── __tests__/        # 单元测试和集成测试
 │   └── memory/          # 会话记忆系统
 │       ├── index.ts         # 统一导出
 │       ├── types.ts         # TokenUsage、CostRecord 等类型
@@ -259,6 +273,112 @@ src/
         ├── index.ts      # 插件导出
         └── tavily.ts     # Tavily搜索插件
 ```
+
+## 执行引擎架构
+
+Mini Agent 采用全新的状态机执行引擎，实现了 OBSERVE → PLAN → ACT → REFLECT 的智能循环。
+
+```
+用户输入 → OBSERVE (观察状态)
+                ↓
+           PLAN (规划)
+                ↓
+           ACT (执行工具)
+                ↓
+           REFLECT (反思)
+                ↓
+           是否继续? → 返回最终答案
+```
+
+### 状态机流程
+
+#### 1. OBSERVE（观察阶段）
+
+- 收集当前执行状态
+- 构建 PlanningContext（规划上下文）
+- 更新工作记忆和工具记忆
+- 检查终止条件
+
+#### 2. PLAN（规划阶段）
+
+- 调用 LLM 生成多步执行计划
+- 解析计划依赖关系
+- 识别可并行执行的步骤
+- 如果是最终答案，直接返回
+
+#### 3. ACT（执行阶段）
+
+- 构建工具依赖图
+- 识别可并行执行的工具波次
+- 并行执行工具调用（Promise.all）
+- 收集工具执行结果
+- 更新工具记忆和工作记忆
+
+#### 4. REFLECT（反思阶段）
+
+- 评估工具执行成功率
+- 分析信息增长情况
+- 检测重复调用模式
+- 做出决策：continue / retry / finalize_answer / fallback
+
+### 智能终止条件
+
+引擎支持多种语义终止条件：
+
+1. **规划器信号终止** - 规划器返回 `isFinalAnswer: true`
+2. **反思器决策终止** - 反思器返回 `finalize_answer` 决策
+3. **最大迭代次数** - 达到 `maxIterations` 限制
+4. **最大执行时间** - 达到 `maxExecutionTime` 限制
+5. **Token 预算超限** - Token 使用量超过阈值
+6. **工具执行失败降级** - 连续失败次数超过预算
+7. **无信息增长** - 连续多次无信息增长
+
+### 执行引擎配置
+
+可在 `.env` 中配置执行引擎参数：
+
+```env
+# 执行引擎配置
+EXECUTION_MAX_ITERATIONS=10          # 最大迭代次数
+EXECUTION_MAX_TIME=300000            # 最大执行时间（毫秒）
+EXECUTION_TOKEN_THRESHOLD=1000000    # Token 预算阈值
+EXECUTION_TOOL_TIMEOUT=30000         # 工具执行超时
+EXECUTION_MAX_RETRY=3                # 每个工具最大重试次数
+```
+
+详细配置说明见 [执行引擎 API 文档](docs/execution-engine-api.md)。
+
+### 反思器配置
+
+反思器支持三种决策策略：
+
+```typescript
+// 保守策略 - 更倾向于重试和降级
+const reflectorConfig = { strategy: 'conservative' };
+
+// 平衡策略 - 默认配置
+const reflectorConfig = { strategy: 'balanced' };
+
+// 激进策略 - 更倾向于继续执行
+const reflectorConfig = { strategy: 'aggressive' };
+```
+
+### 并行工具执行
+
+执行引擎自动识别可并行执行的工具：
+
+```
+计划步骤：
+  - step1: 搜索天气（无依赖）
+  - step2: 搜索新闻（无依赖）
+  - step3: 生成摘要（依赖 step1, step2）
+
+执行波次：
+  - 波次0: [搜索天气, 搜索新闻] ← 并行执行
+  - 波次1: [生成摘要] ← 依赖完成后执行
+```
+
+详细说明见 [规划器升级指南](docs/planner-upgrade-guide.md)。
 
 ## 编排层架构
 
