@@ -19,9 +19,19 @@ export interface Message {
 
 export type ToolCallStatus = 'pending' | 'success' | 'failed' | 'timeout';
 
-export type ExecutionPhase = 'OBSERVE' | 'PLAN' | 'ACT' | 'REFLECT';
+export type ExecutionPhase =
+  | 'OBSERVE'
+  | 'PLAN'
+  | 'ACT'
+  | 'EVALUATE'
+  | 'REFLECT';
 
-export interface ExecutionConfig {
+/**
+ * 统一后的执行配置接口
+ * 合并了ExecutionConfig和ExecutionConfigExtended的所有配置项
+ */
+export interface UnifiedExecutionConfig {
+  // 基础配置
   maxIterations: number;
   maxExecutionTime: number;
   maxWorkingMemorySize: number;
@@ -32,9 +42,26 @@ export interface ExecutionConfig {
   toolTimeout: number;
   maxRetryPerTool: number;
   enableParallelExecution: boolean;
+
+  // 并行执行配置
+  maxConcurrentTools: number;
+  waveTimeout: number;
+
+  // 安全配置
+  enableStateProtection: boolean;
+  maxStateSize: number;
 }
 
-export const DEFAULT_EXECUTION_CONFIG: ExecutionConfigExtended = {
+/**
+ * 向后兼容的类型别名
+ * 保持现有代码的兼容性
+ */
+export type ExecutionConfig = UnifiedExecutionConfig;
+
+/**
+ * 统一后的默认配置
+ */
+export const DEFAULT_UNIFIED_CONFIG: UnifiedExecutionConfig = {
   maxIterations: 10,
   maxExecutionTime: 300000,
   maxWorkingMemorySize: 10,
@@ -47,7 +74,14 @@ export const DEFAULT_EXECUTION_CONFIG: ExecutionConfigExtended = {
   enableParallelExecution: true,
   maxConcurrentTools: 5,
   waveTimeout: 60000,
+  enableStateProtection: true,
+  maxStateSize: 1000,
 };
+
+/**
+ * 保持向后兼容的默认配置别名
+ */
+export const DEFAULT_EXECUTION_CONFIG = DEFAULT_UNIFIED_CONFIG;
 
 export interface ToolRecord {
   toolCallId: string;
@@ -390,6 +424,11 @@ export interface PlanStep {
   dependsOn: string[];
   confidence: number;
   reasoning?: string;
+  // 新增：步骤原子性定义
+  expected_output?: string;
+  success_criteria?: string;
+  retryable?: boolean;
+  max_retries?: number;
 }
 
 export interface Plan {
@@ -397,6 +436,11 @@ export interface Plan {
   overallConfidence: number;
   reasoning?: string;
   isFinalAnswer?: boolean;
+  // 新增：计划结构标准化
+  expected_outcome?: string;
+  termination_condition?: string;
+  priority?: 'high' | 'medium' | 'low';
+  estimated_duration?: number;
 }
 
 export type ReflectionDecision =
@@ -431,6 +475,53 @@ export interface ReflectionReasoning {
   toolFailures?: ToolFailureAnalysis[];
 }
 
+/**
+ * 失败反思结构接口
+ */
+export interface FailureReflection {
+  /** 失败类型 */
+  failure_type:
+    | 'tool_error'
+    | 'bad_plan'
+    | 'missing_info'
+    | 'timeout'
+    | 'unknown';
+  /** 根本原因 */
+  root_cause: string;
+  /** 影响范围 */
+  impact_scope: 'single_step' | 'multiple_steps' | 'entire_plan';
+  /** 可恢复性 */
+  is_recoverable: boolean;
+  /** 改进建议 */
+  improvement_suggestions: string[];
+  /** 相关工具 */
+  related_tools?: string[];
+  /** 错误详情 */
+  error_details?: string;
+}
+
+/**
+ * 成功反思结构接口
+ */
+export interface SuccessReflection {
+  /** 可复用模式 */
+  reusable_pattern?: string;
+  /** 有用工具序列 */
+  useful_tool_sequence?: string[];
+  /** 优化提示 */
+  optimization_hint?: string;
+  /** 成功因素 */
+  success_factors: string[];
+  /** 关键步骤 */
+  key_steps?: string[];
+  /** 性能指标 */
+  performance_metrics?: {
+    execution_time: number;
+    success_rate: number;
+    information_gain: number;
+  };
+}
+
 export interface ReflectionResult {
   decision: ReflectionDecision;
   reasoning: string;
@@ -439,6 +530,10 @@ export interface ReflectionResult {
   informationGrowth?: number;
   errorAttribution?: ErrorAttribution;
   detailedReasoning?: ReflectionReasoning;
+  /** 失败反思结构 */
+  failure_reflection?: FailureReflection;
+  /** 成功反思结构 */
+  success_reflection?: SuccessReflection;
 }
 
 export interface ExecutionMetrics {
@@ -739,6 +834,19 @@ export interface ToolExecutionResult {
   startTime: number;
   endTime: number;
   duration: number;
+  // 新增：执行结果结构化
+  token_usage?: {
+    input: number;
+    output: number;
+    total: number;
+  };
+  error_type?:
+    | 'network_error'
+    | 'parameter_error'
+    | 'timeout'
+    | 'rate_limit'
+    | 'unknown';
+  retryable?: boolean;
 }
 
 export interface WaveExecutionResult {
@@ -926,6 +1034,72 @@ export class DeduplicationEngine {
   }
 }
 
+// 状态快照接口 - 用于OBSERVE阶段收集系统状态
+export interface StateSnapshot {
+  iteration: number;
+  timestamp: number;
+  workingMemorySize: number;
+  workingMemoryTokens: number;
+  toolMemorySize: number;
+  recentToolRecords: ToolRecord[];
+  currentPlanProgress: {
+    totalSteps: number;
+    completedSteps: number;
+    remainingSteps: number;
+  };
+  failureStats: {
+    totalFailures: number;
+    recentFailures: number;
+    retryCount: number;
+  };
+  performanceStats: {
+    avgToolExecutionTime: number;
+    totalExecutionTime: number;
+  };
+}
+
+// 状态摘要接口 - 用于生成状态的简洁描述
+export interface StateDigest {
+  summary: string;
+  keyMetrics: {
+    progressRate: number;
+    successRate: number;
+    informationGrowth: number;
+  };
+  highlights: string[];
+  warnings: string[];
+  timestamp: number;
+  iteration: number;
+}
+
+// 状态变化检测接口 - 用于检测状态变化
+export interface StateDelta {
+  progress_delta: number;
+  new_errors: number;
+  new_tools_used: boolean;
+  information_growth_rate: number;
+  should_skip_plan: boolean;
+  skip_reason?: string;
+  timestamp: number;
+}
+
+// Agent错误接口 - 用于统一错误处理
+export interface AgentError {
+  type:
+    | 'tool_error'
+    | 'planner_error'
+    | 'system_error'
+    | 'timeout_error'
+    | 'validation_error';
+  retryable: boolean;
+  severity: 1 | 2 | 3 | 4 | 5;
+  message: string;
+  originalError?: unknown;
+  timestamp: number;
+  iteration: number;
+  context?: Record<string, unknown>;
+}
+
 export type TerminationReason =
   | 'planner_final'
   | 'no_information_growth'
@@ -933,6 +1107,7 @@ export type TerminationReason =
   | 'token_budget_exceeded'
   | 'execution_timeout'
   | 'failure_budget_exhausted'
+  | 'consecutive_failures'
   | 'none';
 
 export interface TerminationCheckResult {
@@ -952,6 +1127,9 @@ export interface TerminationConfig {
   noGrowthIterationsRequired: number;
   failureBudget: number;
   warningThresholdRatio: number;
+  // 新增：连续失败终止条件
+  maxConsecutiveFailures: number;
+  consecutiveFailuresRequired: number;
 }
 
 export const DEFAULT_TERMINATION_CONFIG: TerminationConfig = {
@@ -963,6 +1141,9 @@ export const DEFAULT_TERMINATION_CONFIG: TerminationConfig = {
   noGrowthIterationsRequired: 2,
   failureBudget: 3,
   warningThresholdRatio: 0.8,
+  // 新增：连续失败终止条件默认值
+  maxConsecutiveFailures: 3,
+  consecutiveFailuresRequired: 3,
 };
 
 export class TerminationChecker {
@@ -1152,6 +1333,32 @@ export class TerminationChecker {
       reason: 'none',
       priority: 999,
       message: `失败预算充足 (${this.failureCount}/${this.config.failureBudget})`,
+    };
+  }
+
+  /**
+   * 检查连续失败终止条件
+   */
+  checkConsecutiveFailures(
+    consecutiveFailures: number
+  ): TerminationCheckResult {
+    if (consecutiveFailures >= this.config.consecutiveFailuresRequired) {
+      return {
+        shouldTerminate: true,
+        reason: 'consecutive_failures',
+        priority: 7,
+        message: `连续失败次数过多 (${consecutiveFailures}/${this.config.consecutiveFailuresRequired})`,
+        details: {
+          consecutiveFailures,
+          threshold: this.config.consecutiveFailuresRequired,
+        },
+      };
+    }
+    return {
+      shouldTerminate: false,
+      reason: 'none',
+      priority: 999,
+      message: `连续失败次数正常 (${consecutiveFailures}/${this.config.consecutiveFailuresRequired})`,
     };
   }
 

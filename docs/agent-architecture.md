@@ -28,10 +28,10 @@ Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LL
 │  │  │  ┌─────────────────────────────────────────────────┐│  │   │
 │  │  │  │           ExecutionEngine                       ││  │   │
 │  │  │  │                                                  ││  │   │
-│  │  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌───────┐││  │   │
-│  │  │  │  │OBSERVE  │→│  PLAN   │→│   ACT   │→│REFLECT│││  │   │
-│  │  │  │  │ 阶段    │ │  阶段   │ │  阶段   │ │ 阶段  │││  │   │
-│  │  │  │  └─────────┘ └─────────┘ └─────────┘ └───────┘││  │   │
+│  │  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐││  │   │
+│  │  │  │  │OBSERVE  │→│  PLAN   │→│   ACT   │→│ EVALUATE│→│REFLECT │││  │   │
+│  │  │  │  │ 阶段    │ │  阶段   │ │  阶段   │ │  阶段   │ │ 阶段  │││  │   │
+│  │  │  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘││  │   │
 │  │  │  └─────────────────────────────────────────────────┘│  │   │
 │  │  └─────────────────────────────────────────────────────┘  │   │
 │  └───────────────────────┬────────────────────────────────────┘   │
@@ -108,7 +108,7 @@ Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LL
 
 ### 2.2 ExecutionEngine - 执行引擎
 
-**职责**: 管理多轮循环执行，实现状态机驱动的 OBSERVE → PLAN → ACT → REFLECT 流程。
+**职责**: 管理多轮循环执行，实现状态机驱动的 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 流程。
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -118,21 +118,24 @@ Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LL
 │  • config: ExecutionConfig                     │
 │  • phase: ExecutionPhase                       │
 │  • iteration: number                           │
-│  • workingMemory: ConversationHistory          │
-│  • toolMemory: ToolMemory                      │
-│  • summaryMemory: SummaryMemory                │
-│  • metrics: ExecutionMetricsCollector          │
-│  • deduplicationEngine: DeduplicationEngine    │
+│  • workingMemory: ConversationHistory         │
+│  • toolMemory: ToolMemory                     │
+│  • summaryMemory: SummaryMemory               │
+│  • metrics: ExecutionMetricsCollector         │
+│  • deduplicationEngine: DeduplicationEngine   │
 │  • terminationChecker: TerminationChecker      │
-│  • reflector: Reflector                        │
+│  • reflector: Reflector                       │
+│  • evaluator: Evaluator                       │
+│  • stateDigestGenerator: StateDigestGenerator │
+│  • deltaDetector: DeltaDetector                │
 │                                                 │
 │  Methods:                                       │
-│  • run(userPrompt) → 执行主循环                │
-│  • getPhase() → 获取当前阶段                   │
-│  • getIteration() → 获取迭代次数               │
-│  • getWorkingMemory() → 获取工作记忆           │
-│  • getToolMemory() → 获取工具记忆              │
-│  • getSummaryMemory() → 获取摘要记忆           │
+│  • run(userPrompt) → 执行主循环               │
+│  • getPhase() → 获取当前阶段                  │
+│  • getIteration() → 获取迭代次数              │
+│  • getWorkingMemory() → 获取工作记忆          │
+│  • getToolMemory() → 获取工具记忆             │
+│  • getSummaryMemory() → 获取摘要记忆         │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -154,6 +157,11 @@ Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LL
          │         ▼                 │
          │   ┌──────────┐            │
          │   │   ACT    │            │
+         │   └──────────┘            │
+         │         │                 │
+         │         ▼                 │
+         │   ┌──────────┐            │
+         │   │ EVALUATE │            │
          │   └──────────┘            │
          │         │                 │
          │         ▼                 │

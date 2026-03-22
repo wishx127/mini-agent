@@ -51,6 +51,7 @@ enum ExecutionPhase {
   OBSERVE = 'OBSERVE', // 观察阶段
   PLAN = 'PLAN', // 规划阶段
   ACT = 'ACT', // 执行阶段
+  EVALUATE = 'EVALUATE', // 评估阶段
   REFLECT = 'REFLECT', // 反思阶段
 }
 ```
@@ -77,6 +78,11 @@ enum ExecutionPhase {
          │         │                 │
          │         ▼                 │
          │   ┌──────────┐            │
+         │   │ EVALUATE │            │
+         │   └──────────┘            │
+         │         │                 │
+         │         ▼                 │
+         │   ┌──────────┐            │
          │   │ REFLECT  │            │
          │   └──────────┘            │
          │         │                 │
@@ -98,7 +104,10 @@ enum ExecutionPhase {
 | OBSERVE  | 正常流程     | PLAN     | 收集状态后进入规划 |
 | PLAN     | 生成计划     | ACT      | 计划生成后进入执行 |
 | PLAN     | 返回最终答案 | 终止     | 规划器直接返回答案 |
-| ACT      | 执行完成     | REFLECT  | 工具执行后进入反思 |
+| ACT      | 执行完成     | EVALUATE | 工具执行后进入评估 |
+| EVALUATE | 评分 ≥ 0.8   | REFLECT  | 评估良好，进入反思 |
+| EVALUATE | 评分 < 0.4   | PLAN     | 评估较差，重新规划 |
+| EVALUATE | 其他评分     | REFLECT  | 评估一般，进入反思 |
 | REFLECT  | 继续执行     | OBSERVE  | 反思决定继续循环   |
 | REFLECT  | 重试计划     | PLAN     | 反思决定重新规划   |
 | REFLECT  | 返回答案     | 终止     | 反思决定返回答案   |

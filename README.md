@@ -5,7 +5,9 @@
 ## 功能特性
 
 - 🤖 基于LangChain的Agent核心
-- 🚀 全新执行引擎 - 基于状态机的 ExecutionEngine，支持 OBSERVE → PLAN → ACT → REFLECT 循环
+- 🚀 全新执行引擎 - 基于状态机的 ExecutionEngine，支持 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 循环
+- 📊 智能评估系统 - ACT阶段后自动评估执行结果，基于评分决策下一步行为
+- 🔍 状态快照与变更检测 - OBSERVE阶段增强，实时追踪系统状态变化
 - 🔧 支持自定义模型baseURL
 - 🛠️ 支持工具调用
 - ⚡ 并行工具执行 - 自动识别可并行步骤，大幅提升执行效率
@@ -276,7 +278,7 @@ src/
 
 ## 执行引擎架构
 
-Mini Agent 采用全新的状态机执行引擎，实现了 OBSERVE → PLAN → ACT → REFLECT 的智能循环。
+Mini Agent 采用全新的状态机执行引擎，实现了 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 的智能循环。
 
 ```
 用户输入 → OBSERVE (观察状态)
@@ -284,6 +286,8 @@ Mini Agent 采用全新的状态机执行引擎，实现了 OBSERVE → PLAN →
            PLAN (规划)
                 ↓
            ACT (执行工具)
+                ↓
+           EVALUATE (评估)
                 ↓
            REFLECT (反思)
                 ↓
@@ -294,7 +298,9 @@ Mini Agent 采用全新的状态机执行引擎，实现了 OBSERVE → PLAN →
 
 #### 1. OBSERVE（观察阶段）
 
-- 收集当前执行状态
+- 收集当前执行状态快照
+- 生成状态摘要（StateDigest）
+- 检测状态变更（StateDelta）
 - 构建 PlanningContext（规划上下文）
 - 更新工作记忆和工具记忆
 - 检查终止条件
@@ -314,7 +320,16 @@ Mini Agent 采用全新的状态机执行引擎，实现了 OBSERVE → PLAN →
 - 收集工具执行结果
 - 更新工具记忆和工作记忆
 
-#### 4. REFLECT（反思阶段）
+#### 4. EVALUATE（评估阶段）
+
+- 评估工具执行结果质量（成功率、响应质量）
+- 计算综合评分（0-1范围）
+- 根据评分决策下一步：
+  - 评分 ≥ 0.8：进入 REFLECT 阶段
+  - 评分 < 0.4：直接进入 PLAN 阶段重新规划
+  - 其他情况：进入 REFLECT 阶段
+
+#### 5. REFLECT（反思阶段）
 
 - 评估工具执行成功率
 - 分析信息增长情况

@@ -5,8 +5,8 @@ import { calculateCost, type LLMUsage } from '../../observability/index.js';
 import type { CostRecord, CostSummary } from './types.js';
 
 /**
- * CostTracker - 从 LLM 响应的 usageMetadata 读取并累计 token 消耗和成本
- * 需要在项目根目录创建 pricing.json 配置文件
+ * CostTracker - 从 LLM 响应的 usageMetadata 读取并累计 token 消耗
+ * 成本单价换算暂不实现，totalCost 固定为 0
  */
 export class CostTracker {
   private records: CostRecord[] = [];

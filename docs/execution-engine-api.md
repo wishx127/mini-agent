@@ -111,7 +111,9 @@ console.log(result.metrics);
 
 ### 1. OBSERVE 阶段
 
-- 收集当前状态
+- 收集当前状态快照
+- 生成状态摘要（StateDigest）
+- 检测状态变更（StateDelta）
 - 构建 PlanningContext
 - 更新工作记忆
 
@@ -128,7 +130,16 @@ console.log(result.metrics);
 - 更新工具记忆和工作记忆
 - 记录执行指标
 
-### 4. REFLECT 阶段
+### 4. EVALUATE 阶段
+
+- 评估工具执行结果质量
+- 计算综合评分（0-1范围）
+- 根据评分决策下一步：
+  - 评分 ≥ 0.8：进入 REFLECT 阶段
+  - 评分 < 0.4：进入 PLAN 阶段重新规划
+  - 其他情况：进入 REFLECT 阶段
+
+### 5. REFLECT 阶段
 
 - 分析工具执行结果
 - 评估信息增长
