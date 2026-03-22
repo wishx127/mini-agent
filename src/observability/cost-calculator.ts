@@ -152,3 +152,19 @@ export function formatCost(cost: CostCalculation): string {
   const currencySymbol = cost.currency === 'CNY' ? '¥' : '$';
   return `${currencySymbol}${cost.totalCost.toFixed(6)}`;
 }
+
+export function addCustomPricing(
+  modelName: string,
+  pricing: ModelPricing
+): void {
+  if (!userPricingConfig) {
+    userPricingConfig = {
+      pricing: {},
+    };
+  }
+
+  userPricingConfig.pricing[modelName] = pricing;
+  pricingKeysSorted = Object.keys(userPricingConfig.pricing).sort(
+    (a, b) => b.length - a.length
+  );
+}

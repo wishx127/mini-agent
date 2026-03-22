@@ -219,13 +219,149 @@ export class AgentCore {
   // ==================== 主入口 ====================
 
   /**
+   * 过滤LLM响应中的推理过程，只保留最终答案
+   */
+  private filterReasoningProcess(content: string): string {
+    if (!content) return content;
+
+    let filtered = content;
+
+    // 移除 <thinking>...</thinking> 标签及其内容
+    filtered = filtered.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+
+    // 移除 <thought>...</thought> 标签及其内容
+    filtered = filtered.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+
+    // 移除 <reasoning>...</reasoning> 标签及其内容
+    filtered = filtered.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+
+    // 移除 <analysis>...</analysis> 标签及其内容
+    filtered = filtered.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '');
+
+    // 移除 ```thinking...``` 代码块
+    filtered = filtered.replace(/```thinking[\s\S]*?```/gi, '');
+
+    // 移除 ```thought...``` 代码块
+    filtered = filtered.replace(/```thought[\s\S]*?```/gi, '');
+
+    // 移除 ```reasoning...``` 代码块
+    filtered = filtered.replace(/```reasoning[\s\S]*?```/gi, '');
+
+    // 移除以"思考："、"推理："、"分析："等开头的段落（支持中英文冒号）
+    filtered = filtered.replace(
+      /^(思考|推理|分析|考虑|让我想想|首先|第一步|Thought|Reasoning|Analysis|Let me think|First)[：:][\s\S]*?(?=\n\n|\n[^思推考分虑让首第TLF]|$)/gim,
+      ''
+    );
+
+    // 移除包含"让我思考"、"我需要分析"等的段落
+    filtered = filtered.replace(
+      /^(让我思考|我需要分析|我来分析|让我想想|我来思考|Let me think|I need to analyze|I'll analyze)[\s\S]*?(?=\n\n|\n[^让我来思分考想LIA]|$)/gim,
+      ''
+    );
+
+    // 移除以"好的"、"Okay"、"Sure"等开头的确认性语句（如果后面跟着推理过程）
+    filtered = filtered.replace(
+      /^(好的|Okay|Sure|Alright|当然|没问题)[，,]?(让我|我来|I'll|Let me)[\s\S]*?(?=\n\n|\n[^让来IL]|$)/gim,
+      ''
+    );
+
+    // 移除单独成行的"思考过程："、"推理过程："等标题
+    filtered = filtered.replace(
+      /^(思考过程|推理过程|分析过程|Thought process|Reasoning process)[：:]\s*$/gim,
+      ''
+    );
+
+    // 移除 "---" 分隔线后面紧跟的推理内容
+    filtered = filtered.replace(
+      /---\s*\n(思考|推理|分析|Thought|Reasoning|Analysis)[：:][\s\S]*?(?=\n\n|$)/gi,
+      ''
+    );
+
+    // 新增：移除以"根据"开头的分析段落（如"根据用户偏好数据和当前对话上下文..."）
+    filtered = filtered.replace(/^根据[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
+
+    // 新增：移除包含"下一步应"的推理段落
+    filtered = filtered.replace(/.*下一步应[\s\S]*?(?=\n\n|\n[^下]|$)/gi, '');
+
+    // 新增：移除包含"用户正在期待"的推理段落
+    filtered = filtered.replace(
+      /.*用户正在期待[\s\S]*?(?=\n\n|\n[^用]|$)/gi,
+      ''
+    );
+
+    // 新增：移除包含"虽然此前"的推理段落
+    filtered = filtered.replace(/.*虽然此前[\s\S]*?(?=\n\n|\n[^虽]|$)/gi, '');
+
+    // 新增：移除包含"满足其"的推理段落
+    filtered = filtered.replace(/.*满足其[\s\S]*?(?=\n\n|\n[^满]|$)/gi, '');
+
+    // 新增：移除包含"提升对话体验"的推理段落
+    filtered = filtered.replace(
+      /.*提升对话体验[\s\S]*?(?=\n\n|\n[^提]|$)/gi,
+      ''
+    );
+
+    // 新增：移除以"分析用户"开头的段落
+    filtered = filtered.replace(/^分析用户[\s\S]*?(?=\n\n|\n[^分]|$)/gi, '');
+
+    // 新增：移除以"基于"开头的分析段落
+    filtered = filtered.replace(/^基于[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
+
+    // 新增：移除以"考虑到"开头的分析段落
+    filtered = filtered.replace(/^考虑到[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
+
+    // 新增：移除以"为了"开头的目的说明段落（如果后面跟着推理）
+    filtered = filtered.replace(
+      /^为了[\s\S]*?(?=，|,)(?:，|,)[\s\S]*?(?=\n\n|\n[^为]|$)/gi,
+      ''
+    );
+
+    // 移除JSON格式的reasoning字段暴露
+    filtered = filtered.replace(/"reasoning"\s*:\s*"[^"]*"/gi, '');
+    filtered = filtered.replace(/reasoning\s*:\s*"[^"]*"/gi, '');
+
+    // 移除包含"核心诉求"、"置信度"、"单次澄清动作"等内部决策说明
+    filtered = filtered.replace(/.*核心诉求[\s\S]*?(?=\n\n|\n[^核]|$)/gi, '');
+    filtered = filtered.replace(/.*置信度[\s\S]*?(?=\n\n|\n[^置]|$)/gi, '');
+    filtered = filtered.replace(
+      /.*单次澄清动作[\s\S]*?(?=\n\n|\n[^单]|$)/gi,
+      ''
+    );
+    filtered = filtered.replace(
+      /.*无需复杂流程[\s\S]*?(?=\n\n|\n[^无]|$)/gi,
+      ''
+    );
+    filtered = filtered.replace(/.*置信度高[\s\S]*?(?=\n\n|\n[^置]|$)/gi, '');
+
+    // 移除看起来像内部决策输出的内容
+    filtered = filtered.replace(/^用户的[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^此为[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^基于用户偏好[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^应立即[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^无需[\s\S]*?(?=\n\n|$)/gim, '');
+
+    // 移除 ```json 代码块
+    filtered = filtered.replace(/```json[\s\S]*?```/gi, '');
+
+    // 清理多余的空行
+    filtered = filtered.replace(/\n{3,}/g, '\n\n');
+
+    // 去除首尾空白
+    filtered = filtered.trim();
+
+    return filtered;
+  }
+
+  /**
    * 处理用户提示
    *
    * 将请求委托给 Controller 执行编排流程
    */
   async processPrompt(prompt: string): Promise<string> {
     try {
-      return await this.controller.execute(prompt);
+      const result = await this.controller.execute(prompt);
+      // 过滤推理过程，只返回最终答案
+      return this.filterReasoningProcess(result.finalAnswer);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       console.error(`❌ [AgentCore] 处理错误: ${errorMessage}`);

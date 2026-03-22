@@ -24,10 +24,11 @@ import {
   ExecutionStatus,
   FallbackResult,
   ToolExecutionResult,
-  PlanningContext,
   ToolInfo,
   ConversationMessage,
   TokenStatus,
+  ExecutionResult,
+  TerminationReason,
 } from '../types/agent.js';
 import type { VectorDatabaseConfig } from '../types/memory.js';
 import { ToolRegistry } from '../tools/index.js';
@@ -40,13 +41,10 @@ import {
   type LLMUsage,
 } from '../observability/index.js';
 
-import { Planner } from './planner.js';
-import { Executor } from './executor.js';
 import {
   SessionStore,
   CostTracker,
   createTrimmer,
-  runTokenPreflight,
   getTokenStatus,
   VectorDatabaseClient,
   LongTermMemoryReader,
@@ -67,8 +65,6 @@ export class Controller {
   private config: ControlConfig;
   private metrics: ExecutionMetrics;
   private state: ExecutionState = 'idle';
-  private planner: Planner;
-  private executor: Executor;
   private llm: ChatOpenAI;
   private toolRegistry: ToolRegistry;
   private sessionStore: SessionStore;
@@ -105,13 +101,6 @@ export class Controller {
     this.promptManager = new PromptManager(
       this.spanManager.getObservabilityClient()
     );
-    this.planner = new Planner(
-      llm,
-      toolRegistry,
-      this.spanManager,
-      this.modelName
-    );
-    this.executor = new Executor(toolRegistry, this.config, this.spanManager);
     this.metrics = this.initMetrics();
     // 初始化 startTime，避免 checkTimeout() 在 execute() 前调用时返回错误结果
     this.metrics.startTime = Date.now();
@@ -144,9 +133,18 @@ export class Controller {
       });
 
       // 异步初始化，不阻塞构造函数
-      this.longTermMemoryReader.initialize().catch(() => {
-        this.longTermMemoryReader = null;
-      });
+      this.longTermMemoryReader
+        .initialize()
+        .then((success) => {
+          if (!success) {
+            console.warn('⚠️ [Controller] 长期记忆初始化失败');
+            this.longTermMemoryReader = null;
+          }
+        })
+        .catch((error) => {
+          console.error('❌ [Controller] 长期记忆初始化异常:', error);
+          this.longTermMemoryReader = null;
+        });
     }
 
     // 构建 prompt 模板：system + long_term_memory + history 占位符 + human
@@ -252,11 +250,24 @@ export class Controller {
 
   /**
    * 主入口 - 执行编排流程
+   * 使用 ExecutionEngine 实现 PLAN→ACT→OBSERVE→REFLECT 模式
    */
-  async execute(prompt: string): Promise<string> {
+  async execute(
+    prompt: string,
+    options?: {
+      maxIterations?: number;
+      maxExecutionTime?: number;
+      toolTimeout?: number;
+    }
+  ): Promise<ExecutionResult> {
     // 边缘情况处理
     if (!prompt || prompt.trim().length === 0) {
-      return '输入不能为空';
+      return {
+        finalAnswer: '输入不能为空',
+        success: false,
+        metrics: this.initMetrics(),
+        error: '输入不能为空',
+      };
     }
 
     // 初始化执行状态
@@ -267,144 +278,284 @@ export class Controller {
     const traceId = this.traceManager.generateTraceId();
     this.traceManager.createTrace({
       traceId,
-      name: 'conversation',
+      name: 'conversation-engine',
       sessionId: this.sessionId,
       input: prompt,
     });
 
-    let result = '';
-    let longTermMemoryContext = '';
-
     try {
-      if (this.longTermMemoryReader) {
-        const memories = await this.longTermMemoryReader.search(prompt);
-
-        if (memories.length > 0) {
-          longTermMemoryContext =
-            this.longTermMemoryReader.formatMemoriesForPrompt(memories);
-        }
-      }
-    } catch {
-      // 检索失败继续流程
-      longTermMemoryContext = '';
-    }
-
-    try {
-      // Token 预检：加载当前历史 + 新 prompt，超限时裁剪历史
-      const historyStore = this.sessionStore.getOrCreate(this.sessionId);
-      const historyMessages = await historyStore.getMessages();
-      const allMessages: BaseMessage[] = [
-        ...historyMessages,
-        new HumanMessage(prompt),
-      ];
-      const trimmedMessages = await runTokenPreflight(
-        allMessages,
-        this.config.maxTokens
-      );
-
-      // 若发生裁剪，将裁剪后的历史写回 SessionStore
-      if (trimmedMessages.length < allMessages.length) {
-        await this.sessionStore.clear(this.sessionId);
-        // 最后一条是当前 HumanMessage，不写回（由 chainWithHistory 自动管理）
-        const trimmedHistory = trimmedMessages.slice(
-          0,
-          trimmedMessages.length - 1
-        );
-        for (const msg of trimmedHistory) {
-          await historyStore.addMessage(msg);
-        }
-      }
-
-      // 准备对话历史（供 Planner 判定使用）
-      const updatedHistoryMessages = await historyStore.getMessages();
-      const conversationHistory = this.toConversationHistory(
-        updatedHistoryMessages
-      );
-
-      // 检查是否有可用工具
+      // 获取可用工具
       const enabledTools = this.toolRegistry.getEnabledTools();
-      if (enabledTools.length === 0) {
-        result = await this.llmResponseWithHistory(
-          prompt,
-          longTermMemoryContext
-        );
-        return result;
+      const toolInfos = this.getAvailableToolsInfo(enabledTools);
+
+      // 获取会话历史
+      const sessionHistory = this.sessionStore.getOrCreate(this.sessionId);
+      const historyMessages = await sessionHistory.getMessages();
+
+      // 将历史消息转换为 ConversationMessage 格式
+      const conversationHistory = this.toConversationHistory(historyMessages);
+
+      // 查询用户相关信息（名字、偏好等）
+      let userInfoContext = '';
+      if (this.longTermMemoryReader) {
+        try {
+          const userQueries = [
+            '用户信息',
+            '名字',
+            '称呼',
+            '用户偏好',
+            '个性化',
+          ];
+          const allMemories: string[] = [];
+
+          for (const query of userQueries) {
+            const results = await this.longTermMemoryReader.search(query, 3);
+            if (results.length > 0) {
+              allMemories.push(
+                this.longTermMemoryReader.formatMemoriesForPrompt(results)
+              );
+            }
+          }
+
+          if (allMemories.length > 0) {
+            userInfoContext = allMemories.join('\n\n');
+          }
+        } catch (error) {
+          console.warn('⚠️ [Controller] 查询用户信息失败:', error);
+        }
       }
 
-      // 工具调用循环
-      for (
-        let iteration = 0;
-        iteration < this.config.maxIterations;
-        iteration++
-      ) {
-        // 检查超时
-        if (this.checkTimeout()) {
-          result = this.fallback('timeout');
-          return result;
-        }
+      // 创建执行引擎配置
+      const engineConfig = {
+        maxIterations: options?.maxIterations ?? this.config.maxIterations,
+        maxExecutionTime: options?.maxExecutionTime ?? this.config.timeout,
+        toolTimeout: options?.toolTimeout ?? this.config.toolTimeout,
+        maxWorkingMemorySize: 10,
+        maxToolMemorySize: 100,
+        summaryTriggerRound: 5,
+        summaryTriggerTokens: 8000,
+        tokenThreshold: 0.9,
+        maxRetryPerTool: 3,
+        enableParallelExecution: true,
+      };
 
-        this.metrics.iterationCount = iteration + 1;
+      // 导入 ExecutionEngine
+      const { ExecutionEngine } = await import('./execution/index.js');
 
-        // 规划阶段
-        const planningContext: PlanningContext = {
-          prompt,
-          conversationHistory,
-          availableTools: this.getAvailableToolsInfo(enabledTools),
-        };
+      // 创建执行引擎
+      const engine = new ExecutionEngine(engineConfig, {
+        llm: this.llm,
+        tools: toolInfos,
+        generateSummary: async (messages) => {
+          // 使用 LLM 生成摘要
+          const messagesText = messages
+            .map((m) => `${m.role}: ${m.content}`)
+            .join('\n');
+          const summaryPrompt = `请为以下对话生成一个简洁的摘要：\n${messagesText}`;
+          const response = await this.llm.invoke(summaryPrompt);
+          return typeof response.content === 'string'
+            ? response.content
+            : JSON.stringify(response.content);
+        },
+        executeTool: async (toolName, args) => {
+          try {
+            const tool = this.toolRegistry.getTool(toolName);
+            if (!tool) {
+              return `工具 ${toolName} 不存在`;
+            }
+            const result = await tool.run(args);
+            return typeof result === 'string' ? result : JSON.stringify(result);
+          } catch (error) {
+            const errorMsg =
+              error instanceof Error ? error.message : '未知错误';
+            return `工具执行失败: ${errorMsg}`;
+          }
+        },
+        longTermMemoryReader: this.longTermMemoryReader ?? undefined,
+        userInfoContext: userInfoContext || undefined,
+      });
 
-        const plan = await this.planner.plan(planningContext);
+      // 执行引擎，传入会话历史
+      const { finalAnswer, metrics } = await engine.run(
+        prompt,
+        conversationHistory
+      );
 
-        // 如果不需要工具，直接获取 LLM 响应（历史由 chainWithHistory 自动管理）
-        if (!plan.needsTool || plan.toolCalls.length === 0) {
-          result = await this.llmResponseWithHistory(
-            prompt,
-            longTermMemoryContext
-          );
-          return result;
-        }
+      // 保存用户消息和AI响应到会话历史
+      await sessionHistory.addUserMessage(prompt);
+      await sessionHistory.addAIMessage(finalAnswer);
 
-        // 执行阶段
-        const toolResults: ToolExecutionResult[] =
-          await this.executor.execute(plan);
+      // 更新状态
+      this.state = 'completed';
+      this.metrics.endTime = Date.now();
+      this.metrics.totalDuration =
+        this.metrics.endTime - this.metrics.startTime;
 
-        // 更新指标
-        this.updateMetrics(toolResults);
+      // 映射终止原因
+      const terminationReason = this.mapTerminationReason(
+        metrics.terminationReason
+      );
 
-        // 处理执行结果
-        const allFailed = toolResults.every((r) => !r.success);
-        if (allFailed) {
-          result = await this.llmResponseWithHistory(
-            prompt,
-            longTermMemoryContext
-          );
-          return result;
-        }
+      // 触发记忆提取（异步，不阻塞返回）
+      void this.extractLongTermMemoryAsync(prompt, finalAnswer);
 
-        // 将工具结果注入 prompt，然后获取最终 LLM 响应
-        const toolContext = toolResults
-          .map((r) => `[工具: ${r.toolName}]\n${r.result}`)
-          .join('\n\n');
-        const finalInput = `${prompt}\n\n以下是工具执行结果，请基于这些结果回答用户的问题：\n\n${toolContext}`;
-        result = await this.llmResponseWithHistory(
-          finalInput,
-          longTermMemoryContext
-        );
-        return result;
-      }
-
-      result = this.fallback('iteration_exceeded');
-      return result;
+      return {
+        finalAnswer,
+        success: true,
+        metrics: this.metrics,
+        terminationReason,
+      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       this.state = 'failed';
       this.metrics.endTime = Date.now();
       this.metrics.totalDuration =
         this.metrics.endTime - this.metrics.startTime;
-      result = `处理过程中发生错误: ${errorMessage}`;
-      return result;
+
+      return {
+        finalAnswer: `处理过程中发生错误: ${errorMessage}`,
+        success: false,
+        metrics: this.metrics,
+        error: errorMessage,
+        terminationReason: 'fallback',
+      };
     } finally {
-      this.traceManager.endTrace(result);
+      this.traceManager.endTrace(this.state);
     }
+  }
+
+  /**
+   * 过滤LLM响应中的推理过程，只保留最终答案
+   */
+  private filterReasoningProcess(content: string): string {
+    if (!content) return content;
+
+    let filtered = content;
+
+    // 移除 <thinking>...</thinking> 标签及其内容
+    filtered = filtered.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+
+    // 移除 <thought>...</thought> 标签及其内容
+    filtered = filtered.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+
+    // 移除 <reasoning>...</reasoning> 标签及其内容
+    filtered = filtered.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+
+    // 移除 <analysis>...</analysis> 标签及其内容
+    filtered = filtered.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '');
+
+    // 移除 ```thinking...``` 代码块
+    filtered = filtered.replace(/```thinking[\s\S]*?```/gi, '');
+
+    // 移除 ```thought...``` 代码块
+    filtered = filtered.replace(/```thought[\s\S]*?```/gi, '');
+
+    // 移除 ```reasoning...``` 代码块
+    filtered = filtered.replace(/```reasoning[\s\S]*?```/gi, '');
+
+    // 移除以"思考："、"推理："、"分析："等开头的段落（支持中英文冒号）
+    filtered = filtered.replace(
+      /^(思考|推理|分析|考虑|让我想想|首先|第一步|Thought|Reasoning|Analysis|Let me think|First)[：:][\s\S]*?(?=\n\n|\n[^思推考分虑让首第TLF]|$)/gim,
+      ''
+    );
+
+    // 移除包含"让我思考"、"我需要分析"等的段落
+    filtered = filtered.replace(
+      /^(让我思考|我需要分析|我来分析|让我想想|我来思考|Let me think|I need to analyze|I'll analyze)[\s\S]*?(?=\n\n|\n[^让我来思分考想LIA]|$)/gim,
+      ''
+    );
+
+    // 移除以"好的"、"Okay"、"Sure"等开头的确认性语句（如果后面跟着推理过程）
+    filtered = filtered.replace(
+      /^(好的|Okay|Sure|Alright|当然|没问题)[，,]?(让我|我来|I'll|Let me)[\s\S]*?(?=\n\n|\n[^让来IL]|$)/gim,
+      ''
+    );
+
+    // 移除单独成行的"思考过程："、"推理过程："等标题
+    filtered = filtered.replace(
+      /^(思考过程|推理过程|分析过程|Thought process|Reasoning process)[：:]\s*$/gim,
+      ''
+    );
+
+    // 移除 "---" 分隔线后面紧跟的推理内容
+    filtered = filtered.replace(
+      /---\s*\n(思考|推理|分析|Thought|Reasoning|Analysis)[：:][\s\S]*?(?=\n\n|$)/gi,
+      ''
+    );
+
+    // 新增：移除以"根据"开头的分析段落（如"根据用户偏好数据和当前对话上下文..."）
+    filtered = filtered.replace(/^根据[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
+
+    // 新增：移除包含"下一步应"的推理段落
+    filtered = filtered.replace(/.*下一步应[\s\S]*?(?=\n\n|\n[^下]|$)/gi, '');
+
+    // 新增：移除包含"用户正在期待"的推理段落
+    filtered = filtered.replace(
+      /.*用户正在期待[\s\S]*?(?=\n\n|\n[^用]|$)/gi,
+      ''
+    );
+
+    // 新增：移除包含"虽然此前"的推理段落
+    filtered = filtered.replace(/.*虽然此前[\s\S]*?(?=\n\n|\n[^虽]|$)/gi, '');
+
+    // 新增：移除包含"满足其"的推理段落
+    filtered = filtered.replace(/.*满足其[\s\S]*?(?=\n\n|\n[^满]|$)/gi, '');
+
+    // 新增：移除包含"提升对话体验"的推理段落
+    filtered = filtered.replace(
+      /.*提升对话体验[\s\S]*?(?=\n\n|\n[^提]|$)/gi,
+      ''
+    );
+
+    // 新增：移除以"分析用户"开头的段落
+    filtered = filtered.replace(/^分析用户[\s\S]*?(?=\n\n|\n[^分]|$)/gi, '');
+
+    // 新增：移除以"基于"开头的分析段落
+    filtered = filtered.replace(/^基于[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
+
+    // 新增：移除以"考虑到"开头的分析段落
+    filtered = filtered.replace(/^考虑到[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
+
+    // 新增：移除以"为了"开头的目的说明段落（如果后面跟着推理）
+    filtered = filtered.replace(
+      /^为了[\s\S]*?(?=，|,)(?:，|,)[\s\S]*?(?=\n\n|\n[^为]|$)/gi,
+      ''
+    );
+
+    // 移除JSON格式的reasoning字段暴露
+    filtered = filtered.replace(/"reasoning"\s*:\s*"[^"]*"/gi, '');
+    filtered = filtered.replace(/reasoning\s*:\s*"[^"]*"/gi, '');
+
+    // 移除包含"核心诉求"、"置信度"、"单次澄清动作"等内部决策说明
+    filtered = filtered.replace(/.*核心诉求[\s\S]*?(?=\n\n|\n[^核]|$)/gi, '');
+    filtered = filtered.replace(/.*置信度[\s\S]*?(?=\n\n|\n[^置]|$)/gi, '');
+    filtered = filtered.replace(
+      /.*单次澄清动作[\s\S]*?(?=\n\n|\n[^单]|$)/gi,
+      ''
+    );
+    filtered = filtered.replace(
+      /.*无需复杂流程[\s\S]*?(?=\n\n|\n[^无]|$)/gi,
+      ''
+    );
+    filtered = filtered.replace(/.*置信度高[\s\S]*?(?=\n\n|\n[^置]|$)/gi, '');
+
+    // 移除看起来像内部决策输出的内容
+    filtered = filtered.replace(/^用户的[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^此为[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^基于用户偏好[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^应立即[\s\S]*?(?=\n\n|$)/gim, '');
+    filtered = filtered.replace(/^无需[\s\S]*?(?=\n\n|$)/gim, '');
+
+    // 移除 ```json 代码块
+    filtered = filtered.replace(/```json[\s\S]*?```/gi, '');
+
+    // 清理多余的空行
+    filtered = filtered.replace(/\n{3,}/g, '\n\n');
+
+    // 去除首尾空白
+    filtered = filtered.trim();
+
+    return filtered;
   }
 
   /**
@@ -470,8 +621,10 @@ export class Controller {
       }
 
       if (response && typeof response.content === 'string') {
-        void this.extractLongTermMemoryAsync(input, response.content);
-        return response.content;
+        // 过滤推理过程
+        const filteredContent = this.filterReasoningProcess(response.content);
+        void this.extractLongTermMemoryAsync(input, filteredContent);
+        return filteredContent;
       }
 
       throw new Error('模型响应格式不正确');
@@ -701,5 +854,64 @@ export class Controller {
    */
   getMemoryDispatcher(): MemoryDispatcher | null {
     return this.memoryDispatcher;
+  }
+
+  /**
+   * 映射终止原因到新的 TerminationReason 类型
+   */
+  private mapTerminationReason(reason?: string): TerminationReason {
+    if (!reason) {
+      return 'completed';
+    }
+
+    const reasonMap: Record<string, TerminationReason> = {
+      planner_final: 'planner_final',
+      no_information_growth: 'no_information_growth',
+      max_iterations: 'max_iterations',
+      token_budget_exceeded: 'token_budget_exceeded',
+      execution_timeout: 'execution_timeout',
+      failure_budget_exhausted: 'failure_budget_exhausted',
+      final_answer: 'final_answer',
+      fallback: 'fallback',
+    };
+
+    return reasonMap[reason] || 'completed';
+  }
+
+  /**
+   * 获取执行引擎配置
+   */
+  getEngineConfig() {
+    return {
+      maxIterations: this.config.maxIterations,
+      maxExecutionTime: this.config.timeout,
+      toolTimeout: this.config.toolTimeout,
+      tokenThreshold: this.config.tokenThreshold,
+    };
+  }
+
+  /**
+   * 更新执行引擎配置
+   */
+  updateEngineConfig(
+    config: Partial<{
+      maxIterations: number;
+      maxExecutionTime: number;
+      toolTimeout: number;
+      tokenThreshold: number;
+    }>
+  ) {
+    if (config.maxIterations !== undefined) {
+      this.config.maxIterations = config.maxIterations;
+    }
+    if (config.maxExecutionTime !== undefined) {
+      this.config.timeout = config.maxExecutionTime;
+    }
+    if (config.toolTimeout !== undefined) {
+      this.config.toolTimeout = config.toolTimeout;
+    }
+    if (config.tokenThreshold !== undefined) {
+      this.config.tokenThreshold = config.tokenThreshold;
+    }
   }
 }

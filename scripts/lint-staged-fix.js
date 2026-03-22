@@ -73,6 +73,7 @@ function runTool(tool, baseArgs, files) {
       const output = execFileSync(toolPath, [...baseArgs, ...group], {
         encoding: 'utf-8',
         stdio: 'pipe',
+        shell: process.platform === 'win32', // 在Windows上使用shell执行
       });
       if (output) combinedOutput += output;
     } catch (error) {
