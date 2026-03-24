@@ -1,4 +1,3 @@
-import * as readline from 'readline';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
@@ -10,8 +9,9 @@ import { Command } from 'commander';
 import { AgentCore } from '../agent/core.js';
 import { ModelConfigManager } from '../config/model-config.js';
 import type { ModelConfig } from '../types/model-config.js';
-import { checkWorkerStatus } from '../worker/worker-monitor-utils.js';
 
+import { CommandSelector } from './command-selector.js';
+import { CommandRegistry, CommandLoader } from './commands/index.js';
 import { DisplayManager } from './display-manager.js';
 
 const require = createRequire(import.meta.url);
@@ -53,20 +53,33 @@ function getRandomLoadingMessage(): string {
 }
 
 /**
+ * 输入模式
+ */
+type InputMode = 'normal' | 'command';
+
+/**
  * CLI交互界面类
  */
 export class CLIInterface {
   private agent!: AgentCore;
-  private rl!: readline.Interface;
   private program: Command;
   private displayManager: DisplayManager;
   private config!: ModelConfig;
   private workerProcess: ChildProcess | null = null;
 
+  // 命令系统
+  private commandRegistry: CommandRegistry;
+  private commandSelector: CommandSelector;
+  private inputMode: InputMode = 'normal';
+  private normalInputBuffer: string = '';
+
   constructor() {
     this.program = new Command();
     this.displayManager = new DisplayManager();
+    this.commandRegistry = new CommandRegistry();
+    this.commandSelector = new CommandSelector(this.commandRegistry);
     this.setupCommands();
+    this.setupCommandRegistry();
   }
 
   /**
@@ -81,6 +94,54 @@ export class CLIInterface {
     this.program
       .option('-c, --config <path>', '.env配置文件路径')
       .option('-h, --help', '显示帮助信息');
+  }
+
+  /**
+   * 设置命令注册器
+   */
+  private setupCommandRegistry(): void {
+    const commandDefinitions = CommandLoader.loadBuiltInCommands();
+    const context = this.createCommandContext();
+    const commands = CommandLoader.bindAllContext(commandDefinitions, context);
+    this.commandRegistry.registerAll(commands);
+  }
+
+  /**
+   * 创建命令上下文
+   */
+  private createCommandContext() {
+    return {
+      cli: this,
+      showPrompt: () => this.showPrompt(),
+      clearScreen: () => {
+        console.clear();
+        this.showPrompt();
+      },
+      quit: () => this.quit(),
+    };
+  }
+
+  /**
+   * 显示帮助信息
+   */
+  showHelp(): void {
+    console.log();
+    console.log(Colors.primary('Available Commands:'));
+    console.log(Colors.secondary('─'.repeat(40)));
+    const commands = this.commandRegistry.getAll();
+    for (const cmd of commands) {
+      console.log(`  /${cmd.name} - ${cmd.description}`);
+    }
+    console.log();
+    this.showPrompt();
+  }
+
+  /**
+   * 退出程序
+   */
+  private quit(): void {
+    console.log(Colors.secondary('Goodbye.'));
+    void this.cleanupAndExit(0);
   }
 
   /**
@@ -102,7 +163,7 @@ export class CLIInterface {
       console.log();
       console.log(
         Colors.secondary(
-          'Type your message. Press Ctrl+C or enter "quit" to exit.'
+          'Type your message. Press Ctrl+C or enter "/exit" to exit.'
         )
       );
       console.log();
@@ -146,29 +207,24 @@ export class CLIInterface {
   }
 
   /**
-   * 创建readline接口
+   * 显示提示符
    */
-  private createReadlineInterface(): void {
-    this.rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
+  private showPrompt(): void {
+    process.stdout.write(Colors.primary('> '));
   }
 
   /**
-   * 显示提示符并等待用户输入
+   * 刷新提示符行（清除当前行并重新显示提示符和输入内容）
    */
-  private promptUser(): void {
-    this.rl.question(Colors.primary('> '), (input) => {
-      void this.handleUserInput(input).catch((error) => {
-        console.error(
-          Colors.primary('[Error] '),
-          error instanceof Error ? error.message : error
-        );
-        // 即使出错也要继续提示用户
-        this.promptUser();
-      });
-    });
+  private refreshPromptLine(): void {
+    const content =
+      this.inputMode === 'command'
+        ? `/${this.commandSelector.getFilterText()}`
+        : this.normalInputBuffer;
+
+    // 清除当前行并重新显示
+    process.stdout.write('\r\x1b[K');
+    process.stdout.write(Colors.primary('> ') + content);
   }
 
   /**
@@ -177,23 +233,9 @@ export class CLIInterface {
   private async handleUserInput(input: string): Promise<void> {
     const trimmedInput = input.trim();
 
-    // 检查退出命令
-    if (['quit'].includes(trimmedInput.toLowerCase())) {
-      console.log(Colors.secondary('Goodbye.'));
-      this.rl.close();
-      return;
-    }
-
-    // 检查状态查询命令
-    if (['memory'].includes(trimmedInput.toLowerCase())) {
-      checkWorkerStatus();
-      this.promptUser();
-      return;
-    }
-
     // 处理空输入
     if (trimmedInput.length === 0) {
-      this.promptUser();
+      this.showPrompt();
       return;
     }
 
@@ -204,7 +246,7 @@ export class CLIInterface {
     // 记录请求前的会话 token 累计（展示在 spinner 中）
     const prevSession = this.agent.getSessionTokenSummary();
 
-    // 启动计时器：每 200ms 更新 spinner 文字，展示实时elapsed + 会话 token 总量
+    // 启动计时器：每 100ms 更新 spinner 文字，展示实时elapsed + 会话 token 总量
     let timerHandle: ReturnType<typeof setInterval> | null = setInterval(() => {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       const sessionTokens = prevSession.totalTokens;
@@ -258,7 +300,7 @@ export class CLIInterface {
       );
     } finally {
       // 无论如何都要继续等待下一次输入
-      this.promptUser();
+      this.showPrompt();
     }
   }
 
@@ -280,26 +322,156 @@ export class CLIInterface {
       configPath ?? (options.config as string | undefined)
     );
 
-    // 创建readline接口
-    this.createReadlineInterface();
+    // 设置 stdin 为 raw mode 以捕获单个按键
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
 
-    // 设置关闭处理
-    this.rl.on('close', () => {
-      console.log();
-      void this.cleanupAndExit(0);
+    // 处理按键输入
+    process.stdin.on('data', (key: string) => {
+      void this.handleKeyPress(key);
     });
 
     // 处理 Ctrl+C 和其他退出信号
     process.on('SIGINT', () => {
-      this.rl.close();
+      this.quit();
     });
 
     process.on('SIGTERM', () => {
-      this.rl.close();
+      this.quit();
     });
 
     // 开始交互
-    this.promptUser();
+    this.showPrompt();
+  }
+
+  /**
+   * 处理按键输入
+   */
+  private async handleKeyPress(key: string): Promise<void> {
+    // Ctrl+C
+    if (key === '\x03') {
+      this.quit();
+      return;
+    }
+
+    // 命令选择模式
+    if (this.inputMode === 'command') {
+      await this.handleCommandModeKey(key);
+      return;
+    }
+
+    // 正常输入模式
+    await this.handleNormalModeKey(key);
+  }
+
+  /**
+   * 处理命令选择模式的按键
+   */
+  private async handleCommandModeKey(key: string): Promise<void> {
+    // Enter - 执行选中的命令
+    if (key === '\r' || key === '\n') {
+      const selectedCommand = this.commandSelector.getSelectedCommand();
+      this.commandSelector.deactivate();
+      this.inputMode = 'normal';
+      this.normalInputBuffer = '';
+
+      if (selectedCommand) {
+        console.log();
+        await selectedCommand.action();
+      } else {
+        this.showPrompt();
+      }
+      return;
+    }
+
+    // Esc - 退出命令模式
+    if (key === '\x1b') {
+      this.commandSelector.deactivate();
+      this.inputMode = 'normal';
+      this.normalInputBuffer = '';
+      this.showPrompt();
+      return;
+    }
+
+    // 上箭头
+    if (key === '\x1b[A') {
+      this.commandSelector.handleArrowUp();
+      return;
+    }
+
+    // 下箭头
+    if (key === '\x1b[B') {
+      this.commandSelector.handleArrowDown();
+      return;
+    }
+
+    // 退格键
+    if (key === '\x7f' || key === '\b') {
+      // 如果 filterText 为空，按退格键退出命令模式
+      if (this.commandSelector.getFilterText().length === 0) {
+        this.commandSelector.deactivate();
+        this.inputMode = 'normal';
+        this.normalInputBuffer = '';
+        this.showPrompt();
+        return;
+      }
+      this.commandSelector.handleBackspace();
+      // commandSelector 已经负责刷新输入行，不需要再调用 refreshPromptLine
+      return;
+    }
+
+    // 处理多字符输入（粘贴或快速输入）
+    // 过滤掉控制字符，只保留可打印字符
+    const printableChars = key
+      .split('')
+      .filter((char) => char.length === 1 && char >= ' ' && char !== '/');
+    if (printableChars.length > 0) {
+      for (const char of printableChars) {
+        this.commandSelector.handleCharInput(char);
+      }
+      return;
+    }
+  }
+
+  /**
+   * 处理正常输入模式的按键
+   */
+  private async handleNormalModeKey(key: string): Promise<void> {
+    // Enter - 提交输入
+    if (key === '\r' || key === '\n') {
+      const input = this.normalInputBuffer;
+      this.normalInputBuffer = '';
+      console.log();
+      await this.handleUserInput(input);
+      return;
+    }
+
+    // / - 进入命令选择模式
+    if (key === '/') {
+      this.inputMode = 'command';
+      this.commandSelector.activate();
+      this.refreshPromptLine();
+      return;
+    }
+
+    // 退格键
+    if (key === '\x7f' || key === '\b') {
+      if (this.normalInputBuffer.length > 0) {
+        this.normalInputBuffer = this.normalInputBuffer.slice(0, -1);
+        this.refreshPromptLine();
+      }
+      return;
+    }
+
+    // 普通字符输入
+    if (key.length === 1 && key >= ' ') {
+      this.normalInputBuffer += key;
+      this.refreshPromptLine();
+      return;
+    }
   }
 
   private async cleanupAndExit(code: number): Promise<void> {
