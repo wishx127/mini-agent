@@ -24,6 +24,7 @@
 - 🔒 TypeScript类型安全
 - 🛡️ 熔断器保护 - 自动熔断故障工具,防止资源浪费
 - 🔌 双格式参数定义 - 同时支持 Zod 和 JSON Schema
+- ⌨️ 交互式命令系统 - 支持 `/` 前缀命令，自动补全和选择器，可扩展的命令架构
 
 ## 快速开始
 
@@ -138,11 +139,33 @@ $ npm run dev
 📡 模型: gpt-3.5-turbo
 🌐 Base URL: https://api.openai.com/v1
 
-💬 输入您的消息开始对话 (输入 "quit" 或 "exit" 退出):
-
 👤 您: 你好，请介绍一下自己
 🤖 Agent: 你好！我是一个基于LangChain构建的AI助手...
 ```
+
+### 交互式命令系统
+
+在对话过程中，输入 `/` 进入命令选择模式：
+
+```bash
+👤 您: /
+  /help    - 显示帮助信息
+  /clear   - 清屏
+  /exit    - 退出程序
+  /memory  - 查看内存状态
+```
+
+支持功能：
+
+- **命令选择器**：输入 `/` 后显示可用命令列表，支持上下箭头选择
+- **自动过滤**：输入 `/h` 自动过滤显示 `help` 命令
+- **别名支持**：`/q`、`/exit` 都可以退出程序
+- **快捷键**：
+  - `Enter` - 执行选中的命令
+  - `Esc` - 退出命令模式
+  - `↑/↓` - 选择命令
+
+详细文档见 [命令系统架构](docs/command-system-architecture.md)。
 
 ### 长期记忆
 
@@ -264,6 +287,15 @@ src/
 │   └── prompt-manager.ts  # Prompt 版本管理
 ├── config/          # 配置管理 (含工具配置)
 ├── cli/             # 命令行界面
+│   ├── interface.ts      # CLI主界面
+│   ├── command-selector.ts # 命令选择器
+│   ├── display-manager.ts  # 显示管理器
+│   └── commands/         # 命令系统
+│       ├── types.ts      # 命令类型定义
+│       ├── registry.ts   # 命令注册器
+│       ├── loader.ts     # 命令加载器
+│       ├── index.ts      # 统一导出
+│       └── cmd/          # 命令实现
 ├── types/           # TypeScript类型定义
 └── tools/           # 工具系统 (插件化架构)
     ├── base.ts           # 工具基类和注册表
