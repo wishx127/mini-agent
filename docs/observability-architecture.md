@@ -152,12 +152,29 @@ export class ObservabilityClient {
     return this.rawClient;
   }
 
+  getConfig(): ObservabilityConfig {
+    return this.config;
+  }
+
   async flush(): Promise<void> {
     if (this.client) {
       await this.client.flushAsync();
     }
   }
+
+  async shutdown(): Promise<void> {
+    await this.flush();
+  }
 }
+
+/** 获取默认可观测性客户端（单例） */
+export function getObservabilityClient(): ObservabilityClient;
+
+/** 重置默认客户端 */
+export function resetObservabilityClient(): void;
+
+/** 创建禁用状态的可观测性客户端（用于降级场景） */
+export function createDisabledObservabilityClient(): ObservabilityClient;
 ```
 
 **关键特性**：
@@ -166,6 +183,8 @@ export class ObservabilityClient {
 - 包装客户端（`wrapped`）和原始客户端（`raw`）分离
 - 提供统一的启用状态检查
 - 支持 Prompt 管理 API
+- 单例模式支持（`getObservabilityClient`）
+- 完整的生命周期管理（`shutdown`）
 
 ### 2. TraceManager (trace-manager.ts)
 
@@ -176,20 +195,47 @@ export class TraceManager {
   createTrace(context: TraceContext): string | null {
     if (!this.client.isEnabled()) return null;
 
+    const langfuseClient = this.client.getRawClient();
+    if (!langfuseClient) return null;
+
     const trace = langfuseClient.trace({
       id: context.traceId,
       name: context.name,
       sessionId: context.sessionId,
       userId: context.userId,
+      metadata: context.metadata,
       input: context.input,
     });
+
+    this.currentTraceId = context.traceId;
+    this.traceStartTime = Date.now();
 
     return trace.id;
   }
 
   endTrace(output?: string, metadata?: Record<string, unknown>): void {
-    // 记录最终状态和总耗时
+    if (!this.currentTraceId || !this.client.isEnabled()) return;
+
+    const duration = this.traceStartTime ? Date.now() - this.traceStartTime : 0;
+    const trace = langfuseClient.trace({ id: this.currentTraceId });
+
+    trace.update({
+      output,
+      metadata: {
+        ...metadata,
+        durationMs: duration,
+      },
+    });
+
+    this.currentTraceId = null;
+    this.traceStartTime = null;
   }
+
+  /** 获取当前活跃的 Trace ID */
+  getCurrentTraceId(): string | null;
+
+  /** 生成唯一的 Trace ID */
+  generateTraceId(): string;
 }
 ```
 
@@ -197,27 +243,70 @@ export class TraceManager {
 
 - `conversation`: 完整对话流程
 
+**关键特性**：
+
+- 自动记录 Trace 持续时间
+- 支持获取当前活跃的 Trace ID
+- 提供 Trace ID 生成工具方法
+
 ### 3. SpanManager (span-manager.ts)
 
 负责 Span 的创建、更新和结束。
 
 ```typescript
+/** 创建 Span 的选项 */
+export interface CreateSpanOptions {
+  name: string;
+  type: SpanType;
+  input?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+/** 结束 Span 的选项 */
+export interface EndSpanOptions {
+  output?: unknown;
+  usage?: LLMUsage;
+  cost?: CostCalculation;
+  metadata?: Record<string, unknown>;
+  error?: Error;
+}
+
 export class SpanManager {
+  /** 创建通用 Span */
+  createSpan(options: CreateSpanOptions): string | null;
+
+  /** 结束通用 Span */
+  endSpan(spanId: string, options?: EndSpanOptions): void;
+
+  /** 创建 LLM 调用 Span */
   createLLMSpan(name: string, input: unknown, model?: string): string | null;
+
+  /** 结束 LLM 调用 Span */
   endLLMSpan(
     spanId: string,
     output: unknown,
     usage?: LLMUsage,
-    cost?: CostCalculation
+    cost?: CostCalculation,
+    model?: string
   ): void;
 
+  /** 创建工具调用 Span */
   createToolSpan(name: string, toolName: string, input: unknown): string | null;
+
+  /** 结束工具调用 Span */
   endToolSpan(
     spanId: string,
     output: unknown,
     success: boolean,
+    executionTime?: number,
     error?: Error
   ): void;
+
+  /** 获取 ObservabilityClient 实例 */
+  getObservabilityClient(): ObservabilityClient;
+
+  /** 获取活跃 Span 数量 */
+  getActiveSpanCount(): number;
 }
 ```
 
@@ -230,31 +319,26 @@ export class SpanManager {
 
 - LLM 调用使用 `generation` 方法，可直接记录 usageDetails 和 costDetails
 - 自动降级：如果 SDK 不支持 generation，回退到普通 span
+- 提供通用 `createSpan`/`endSpan` 方法用于自定义追踪
+- 支持追踪活跃 Span 数量
 
 ### 4. CostCalculator (cost-calculator.ts)
 
-负责 Token 成本计算。
+负责 Token 成本计算。定价配置通过 `pricing.json` 文件加载，支持自定义定价。
 
 ```typescript
-export const MODEL_PRICING: Record<string, ModelPricing> = {
-  'gpt-4o': {
-    inputCostPer1k: 0.0025,
-    outputCostPer1k: 0.01,
-    currency: 'USD',
+// pricing.json 配置示例
+{
+  "pricing": {
+    "gpt-4o": { "inputCostPer1k": 0.0025, "outputCostPer1k": 0.01, "currency": "USD" },
+    "gpt-4o-mini": { "inputCostPer1k": 0.00015, "outputCostPer1k": 0.0006, "currency": "USD" },
+    "deepseek-chat": { "inputCostPer1k": 0.00014, "outputCostPer1k": 0.00028, "currency": "USD" }
   },
-  'gpt-4o-mini': {
-    inputCostPer1k: 0.00015,
-    outputCostPer1k: 0.0006,
-    currency: 'USD',
-  },
-  'deepseek-chat': {
-    inputCostPer1k: 0.00014,
-    outputCostPer1k: 0.00028,
-    currency: 'USD',
-  },
-  // ... 更多模型
-};
+  "defaultPricing": { "inputCostPer1k": 0.005, "outputCostPer1k": 0.01, "currency": "USD" }
+}
+```
 
+```typescript
 export function calculateCost(
   usage: LLMUsage,
   modelName: string
@@ -263,20 +347,37 @@ export function calculateCost(
   const inputCost = (usage.inputTokens / 1000) * pricing.inputCostPer1k;
   const outputCost = (usage.outputTokens / 1000) * pricing.outputCostPer1k;
   return {
-    inputCost,
-    outputCost,
-    totalCost: inputCost + outputCost,
+    inputCost: Math.round(inputCost * 1000000) / 1000000,
+    outputCost: Math.round(outputCost * 1000000) / 1000000,
+    totalCost: Math.round((inputCost + outputCost) * 1000000) / 1000000,
     currency: pricing.currency,
   };
 }
+
+export function getModelPricing(modelName: string): ModelPricing {
+  // 从 pricing.json 加载配置，按最长匹配原则查找
+  // 未找到时使用默认定价
+}
+
+export function formatCost(cost: CostCalculation): string {
+  const currencySymbol = cost.currency === 'CNY' ? '¥' : '$';
+  return `${currencySymbol}${cost.totalCost.toFixed(6)}`;
+}
+
+export function addCustomPricing(
+  modelName: string,
+  pricing: ModelPricing
+): void {
+  // 运行时添加自定义定价
+}
 ```
 
-**支持的模型定价**：
+**配置方式**：
 
-- OpenAI: GPT-4, GPT-4 Turbo, GPT-4o, GPT-4o-mini, GPT-3.5-turbo
-- Anthropic: Claude 3 Opus, Claude 3.5 Sonnet, Claude 3 Haiku
-- DeepSeek: DeepSeek Chat, DeepSeek Reasoner
-- 阿里云: Qwen Turbo, Qwen Plus, Qwen Max
+- 在项目根目录创建 `pricing.json` 文件
+- 支持自定义模型定价和默认定价
+- 运行时可通过 `addCustomPricing` 动态添加定价
+- 模型匹配采用最长匹配原则（如 `gpt-4o-2024-05-13` 匹配 `gpt-4o`）
 
 ### 5. PromptManager (prompt-manager.ts)
 
@@ -286,7 +387,10 @@ export function calculateCost(
 export class PromptManager {
   async registerPrompt(template: PromptTemplate): Promise<string | null>;
   async registerSystemPrompts(): Promise<void>;
+  getPrompt(name: string): PromptTemplate | undefined;
   getPromptVersion(name: string): string | undefined;
+  hasPrompt(name: string): boolean;
+  getAllPrompts(): PromptTemplate[];
   async fetchPrompt(
     name: string,
     label?: string
@@ -306,13 +410,14 @@ export class PromptManager {
 - `agent-system`: Agent 系统提示词
 - `planner-decision`: 规划决策提示词（支持变量替换，如 `{{tool_descriptions}}`）
 
-**新增功能**：
+**核心功能**：
 
 - **Prompt 动态获取**：支持从 Langfuse 平台动态获取 Prompt 模板
 - **变量替换**：支持在获取 Prompt 时替换变量（如 `{{tool_descriptions}}`）
 - **缓存机制**：内置缓存，默认 TTL 5 分钟
 - **标签支持**：支持通过 `LANGFUSE_PROMPT_LABEL` 环境变量指定 Prompt 版本标签
 - **降级策略**：如果获取失败，自动降级到本地注册的 Prompt
+- **本地 Prompt 管理**：支持获取、检查、列出本地注册的 Prompt
 
 ## 集成点
 
@@ -497,6 +602,34 @@ this.traceManager.createTrace({
 
 ### 3. 自定义模型定价
 
+**方式一：使用 pricing.json 配置文件（推荐）**
+
+在项目根目录创建 `pricing.json`：
+
+```json
+{
+  "pricing": {
+    "gpt-4o": {
+      "inputCostPer1k": 0.0025,
+      "outputCostPer1k": 0.01,
+      "currency": "USD"
+    },
+    "claude-3-5-sonnet": {
+      "inputCostPer1k": 0.003,
+      "outputCostPer1k": 0.015,
+      "currency": "USD"
+    }
+  },
+  "defaultPricing": {
+    "inputCostPer1k": 0.005,
+    "outputCostPer1k": 0.01,
+    "currency": "USD"
+  }
+}
+```
+
+**方式二：运行时动态添加**
+
 ```typescript
 import { addCustomPricing } from './observability/index.js';
 
@@ -552,8 +685,59 @@ src/observability/
 ├── langfuse-client.ts    # Langfuse 客户端管理
 ├── trace-manager.ts      # Trace 生命周期管理
 ├── span-manager.ts       # Span/Generation 创建和管理
-├── cost-calculator.ts    # 成本计算
+├── cost-calculator.ts    # 成本计算（支持 pricing.json 配置）
 └── prompt-manager.ts     # Prompt 版本管理与动态获取
+```
+
+### 模块导出
+
+```typescript
+// types.ts 导出
+type {
+  ObservabilityConfig,
+  TraceContext,
+  SpanContext,
+  SpanType,
+  LLMUsage,
+  CostCalculation,
+  ModelPricing,
+  ModelPricingConfig,
+  LangfuseClientType,
+  ObservabilityContext,
+  PromptTemplate,
+}
+
+// langfuse-client.ts 导出
+{
+  createObservabilityConfig,
+  createLangfuseClient,
+  ObservabilityClient,
+  getObservabilityClient,
+  resetObservabilityClient,
+  createDisabledObservabilityClient,
+}
+
+// trace-manager.ts 导出
+{ TraceManager }
+
+// span-manager.ts 导出
+{
+  SpanManager,
+  type CreateSpanOptions,
+  type EndSpanOptions,
+}
+
+// cost-calculator.ts 导出
+{
+  hasPricingConfig,
+  getPricingConfig,
+  calculateCost,
+  getModelPricing,
+  formatCost,
+}
+
+// prompt-manager.ts 导出
+{ PromptManager, SYSTEM_PROMPTS }
 ```
 
 ## 监控指标

@@ -354,7 +354,11 @@ const context = reader.formatMemoriesForPrompt(results);
 
 ```typescript
 const dispatcher = new MemoryDispatcher({ enabled: true });
-await dispatcher.dispatch('用户消息', 'AI 回复', 'session-123');
+await dispatcher.enqueue({
+  userMessage: '用户消息',
+  aiResponse: 'AI 回复',
+  sessionId: 'session-123',
+});
 ```
 
 ### MemoryJobQueue
@@ -452,13 +456,19 @@ const controllerB = new Controller(llm, toolRegistry);
 ```typescript
 const manager = controller.getLongTermMemoryManager();
 if (manager) {
-  const stats = await manager.getStats();
+  const stats = manager.getStats();
   console.log('记忆总数:', stats.total);
   console.log('各类型统计:', stats.byType);
 }
 ```
 
-此外，CLI 模式下 Worker 会将消费日志写入 `memory-worker.log`，可用于排查队列是否在消费。
+**注意：** 当前 `getStats()` 返回简化统计（所有值为 0），完整统计功能待实现。
+
+可以通过检查队列目录来排查队列状态：
+
+```bash
+ls ~/.mini-agent/memory-queue/
+```
 
 ### Q6: 队列任务失败怎么办？
 

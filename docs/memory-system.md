@@ -40,14 +40,14 @@ src/agent/memory/
 ├── index.ts                        # 统一导出入口
 ├── types.ts                        # TokenUsage、CostRecord、CostSummary 类型
 ├── session-store.ts                # SessionStore：管理 InMemoryChatMessageHistory
-├── token-manager.ts                # estimateTokenCount + createTrimmer + 预检
-├── cost-tracker.ts                 # CostTracker：Token 消耗统计
-├── vector-database-client.ts        # 向量数据库客户端（Supabase）
-├── memory-extractor.ts             # 记忆提取器（LLM 驱动）
-├── long-term-memory-manager.ts     # 长期记忆管理器（生命周期 + 队列）
+├── token-manager.ts                # estimateTokenCount + createTrimmer + 预检（支持 CJK）
+├── cost-tracker.ts                 # CostTracker：Token 消耗统计 + 成本计算
+├── vector-database-client.ts        # 向量数据库客户端（Supabase + pgvector）
+├── memory-extractor.ts             # 记忆提取器（LLM 驱动 + 置信度过滤）
+├── long-term-memory-manager.ts     # 长期记忆管理器（CRUD + 队列消费 + 记忆合并）
 ├── long-term-memory-reader.ts      # 长期记忆读取器（检索 + 格式化）
-├── memory-dispatcher.ts            # 记忆派发器（协调存储流程）
-└── memory-job-queue.ts             # 持久化队列（异步任务处理）
+├── memory-dispatcher.ts            # 记忆派发器（入队协调）
+└── memory-job-queue.ts             # 持久化队列（异步任务处理 + 失败重试）
 ```
 
 ---
@@ -113,12 +113,16 @@ const ids = store.getAllSessionIds(); // ['user-123', ...]
 
 #### estimateTokenCount
 
-快速估算单段文本的 token 数量（`Math.ceil(text.length / 4)`）。
+快速估算单段文本的 token 数量，支持 CJK 字符精确估算：
+
+- 中文字符（含全角标点）：1 字 ≈ 1 token
+- 其他字符（英文、数字等）：4 字符 ≈ 1 token
 
 ```typescript
 import { estimateTokenCount } from './memory/index.js';
 
 estimateTokenCount('Hello, world!'); // 4
+estimateTokenCount('你好世界'); // 4（每个中文字符算 1 token）
 ```
 
 #### createTrimmer
@@ -169,27 +173,31 @@ const safeMessages = await runTokenPreflight(messages, 4000);
 
 ### CostTracker
 
-从 LLM 响应的 `usageMetadata` 读取并累计 token 消耗。
-
-> **注意**：成本单价换算暂不实现，`totalCost` 固定为 0，仅统计 token 数量。
+从 LLM 响应的 `usageMetadata` 读取并累计 token 消耗，支持成本计算。
 
 ```typescript
 import { CostTracker } from './memory/index.js';
 
 const tracker = new CostTracker();
 
-// 记录一次 LLM 调用的 token 消耗
+// 记录一次 LLM 调用的 token 消耗（会自动计算成本）
 tracker.record(response.usageMetadata, 'gpt-4o');
 
 // 获取累计统计
 const summary = tracker.getSummary();
 // {
-//   totalPromptTokens: 5000,
-//   totalCompletionTokens: 2000,
+//   totalInputTokens: 5000,
+//   totalOutputTokens: 2000,
 //   totalTokens: 7000,
-//   totalCost: 0,         // 暂不计算
+//   totalCost: 0.15,         // 根据模型单价计算
+//   totalInputCost: 0.05,
+//   totalOutputCost: 0.10,
+//   currency: 'USD',
 //   requestCount: 10
 // }
+
+// 获取所有记录
+const records = tracker.getRecords();
 
 // 获取最近 5 条记录
 const recent = tracker.getRecentRecords(5);
@@ -204,13 +212,14 @@ tracker.reset();
 
 长期记忆通过向量数据库实现跨会话的持久化记忆，记住用户的偏好、背景和重要事实。
 
-### Worker 生命周期（CLI 模式）
+### Worker 生命周期
 
-CLI 启动时会自动拉起长期记忆 Worker，负责消费持久化队列：
+长期记忆 Worker 负责消费持久化队列：
 
-- CLI 运行期间，Worker 常驻并持续消费队列
-- CLI 退出后，Worker 继续处理剩余队列，**队列清空后自动退出**
-- Worker 日志写入 `memory-worker.log`
+- `LongTermMemoryManager` 可通过 `startQueueConsumer(pollIntervalMs)` 启动队列消费器
+- Worker 定时轮询队列，处理记忆提取和存储任务
+- 支持失败重试（指数退避）和死信队列（failed 目录）
+- 调用 `shutdown()` 可优雅停止 Worker
 
 ### 核心组件
 
@@ -220,6 +229,7 @@ CLI 启动时会自动拉起长期记忆 Worker，负责消费持久化队列：
 - 生成文本向量（Qwen text-embedding-v3，1024 维）
 - 向量相似度搜索
 - 失败降级和缓存机制
+- 支持 RPC 搜索和降级查询
 
 ```typescript
 import { VectorDatabaseClient } from './memory/index.js';
@@ -228,10 +238,124 @@ const dbClient = new VectorDatabaseClient({
   supabaseUrl: process.env.SUPABASE_URL!,
   supabaseApiKey: process.env.SUPABASE_API_KEY!,
   embeddingApiKey: process.env.EMBEDDING_API_KEY!,
+  tableName: 'memories',
+  embeddingDimension: 1024,
 });
 
+// 初始化连接
 await dbClient.initialize();
+
+// 生成文本向量
+const embedding = await dbClient.generateEmbedding('用户喜欢 TypeScript');
+
+// 搜索相似向量
 const results = await dbClient.searchSimilar(embedding, 5);
+
+// 带过滤条件的搜索
+const filteredResults = await dbClient.searchSimilar(embedding, 5, {
+  type: 'user_preference',
+  sessionId: 'session-123',
+});
+
+// 插入向量
+const memory = await dbClient.insertVector({
+  type: 'user_preference',
+  content: '用户喜欢深色主题',
+  sessionId: 'session-123',
+});
+
+// 更新向量
+await dbClient.updateVector(memoryId, { content: '新内容' });
+
+// 软删除
+await dbClient.deleteVector(memoryId);
+
+// 硬删除
+await dbClient.hardDeleteVector(memoryId);
+
+// 更新访问记录
+await dbClient.updateAccessRecord(memoryId);
+
+// 获取连接状态
+const state = dbClient.getState(); // 'connected' | 'degraded' | 'failed'
+
+// 检查可用性
+const available = dbClient.isAvailable();
+
+// 断开连接
+dbClient.disconnect();
+```
+
+#### LongTermMemoryManager
+
+长期记忆管理器，负责记忆的完整生命周期管理（CRUD、提取、合并、队列消费）。
+
+```typescript
+import { LongTermMemoryManager } from './memory/index.js';
+
+const manager = new LongTermMemoryManager(dbClient, llm, {
+  enabled: true,
+  topK: 5,
+  extractionThreshold: 0.7,
+  maxExtractionsPerTurn: 3,
+  mergeSimilarityThreshold: 0.85,
+  defaultExpirationMs: 30 * 24 * 60 * 60 * 1000, // 30天
+  queueWorkerEnabled: true,
+  queuePollIntervalMs: 2000,
+  queueMaxAttempts: 3,
+  queueRetryBackoffMs: 30000,
+});
+
+// 初始化（连接数据库并启动队列消费器）
+await manager.initialize();
+
+// 创建记忆
+const memory = await manager.create({
+  type: 'user_preference',
+  content: '用户喜欢 TypeScript',
+  sessionId: 'session-123',
+  expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+});
+
+// 搜索记忆
+const results = await manager.search('用户偏好', 5);
+
+// 按类型查询
+const preferences = await manager.getByType('user_preference', 10);
+
+// 按会话查询
+const sessionMemories = await manager.getBySession('session-123', 10);
+
+// 更新记忆
+await manager.update(memoryId, '更新后的内容');
+
+// 更新元数据
+await manager.updateMetadata(memoryId, { key: 'value' });
+
+// 删除记忆
+await manager.delete(memoryId);
+
+// 从对话中提取并存储记忆
+const result = await manager.extractAndStore(
+  '用户消息',
+  'AI 回复',
+  'session-123'
+);
+
+// 将提取任务入队（异步处理）
+await manager.enqueueExtraction('用户消息', 'AI 回复', 'session-123');
+
+// 获取待处理任务数量
+const pendingCount = await manager.getPendingJobCount();
+
+// 获取统计信息
+const stats = manager.getStats();
+
+// 启动队列消费器
+manager.startQueueConsumer(2000);
+
+// 关闭管理器
+manager.shutdown();
 ```
 
 #### LongTermMemoryReader
@@ -244,31 +368,81 @@ const reader = new LongTermMemoryReader(dbClient, {
   topK: 5,
 });
 
+// 初始化连接
+await reader.initialize();
+
+// 搜索相关记忆
 const results = await reader.search('用户偏好');
+
+// 格式化为 prompt 文本
 const context = reader.formatMemoriesForPrompt(results);
 // 输出:
 // 以下是可能与当前对话相关的历史记忆：
 // 1. [用户偏好] 用户喜欢深色主题 (相关度: 95%)
+
+// 关闭连接
+reader.shutdown();
+```
+
+#### MemoryExtractor
+
+LLM 驱动的记忆提取器，从对话中提取结构化记忆。
+
+```typescript
+import { MemoryExtractor } from './memory/index.js';
+
+const extractor = new MemoryExtractor(llm, {
+  confidenceThreshold: 0.7,
+  maxExtractionsPerTurn: 3,
+});
+
+// 从对话中提取记忆
+const result = await extractor.extract('用户消息', 'AI 回复');
+// {
+//   memories: [
+//     { type: 'user_preference', content: '用户喜欢 TypeScript', confidence: 0.9, reasoning: '...' }
+//   ],
+//   success: true
+// }
 ```
 
 #### MemoryDispatcher
 
-协调记忆提取任务的派发。
+协调记忆提取任务的派发，将任务持久化到队列。
 
 ```typescript
 const dispatcher = new MemoryDispatcher({ enabled: true });
-await dispatcher.dispatch('用户消息', 'AI 回复', 'session-123');
+await dispatcher.enqueue({
+  userMessage: '用户消息',
+  aiResponse: 'AI 回复',
+  sessionId: 'session-123',
+});
 ```
 
 #### MemoryJobQueue
 
-持久化队列，用于异步处理记忆存储任务，支持失败重试。
+持久化队列，用于异步处理记忆存储任务，支持失败重试和指数退避。
 
 ```typescript
 const queue = new MemoryJobQueue('/path/to/queue');
-await queue.enqueue({ userMessage, aiResponse, sessionId });
+
+// 初始化队列目录
+await queue.initialize();
+
+// 添加任务到队列
+const jobId = await queue.enqueue({ userMessage, aiResponse, sessionId });
+
+// 获取待处理任务（移动到 processing 目录）
 const jobs = await queue.take(1);
+
+// 确认任务完成（删除 processing 中的文件）
 await queue.ack(job);
+
+// 任务失败时重试或移入失败队列
+await queue.retryOrFail(job, error, maxAttempts, backoffMs);
+
+// 获取待处理任务数量
+const pendingCount = await queue.getPendingCount();
 ```
 
 ### 长期记忆检索流程
@@ -315,6 +489,7 @@ const controller = new Controller(
     enableLongTermMemory: true,
     longTermMemoryTopK: 5,
     memoryExtractionThreshold: 0.7,
+    maxTokens: 4000,
   },
   {
     supabaseUrl: process.env.SUPABASE_URL!,
@@ -334,35 +509,48 @@ const reply2 = await controller.execute('我叫什么名字？');
 // 查询 token 使用统计
 const summary = controller.getCostTracker().getSummary();
 console.log(`本次会话共消耗 ${summary.totalTokens} tokens`);
+
+// 获取长期记忆读取器
+const reader = controller.getLongTermMemoryReader();
+
+// 获取记忆派发器
+const dispatcher = controller.getMemoryDispatcher();
 ```
 
 ### 短期记忆流程
 
 1. 加载会话历史（`SessionStore.getOrCreate`）
-2. Token 预检，超限则裁剪历史
-3. 执行 LLM 链
-4. 自动写回对话历史
-5. 记录 token 消耗
+2. ExecutionEngine 执行对话流程
+3. 手动保存用户消息和 AI 响应到会话历史
+4. 记录 token 消耗
 
 ### 长期记忆流程
 
 1. 检索相关记忆（`LongTermMemoryReader.search`）
 2. 格式化记忆上下文
-3. 注入 LLM Prompt
-4. 异步派发存储任务（`MemoryDispatcher.dispatch`）
+3. 注入 ExecutionEngine 配置
+4. 异步派发存储任务（`MemoryDispatcher.enqueue`）
 5. 持久化队列处理（`MemoryJobQueue`）
 
 ---
 
 ## Token 预检流程
 
-每次 `execute(prompt)` 时：
+Token 管理通过 `ExecutionEngine` 内部处理：
 
 1. **加载当前历史**：从 `SessionStore` 获取历史消息
-2. **拼接当前输入**：`[...historyMessages, new HumanMessage(prompt)]`
-3. **估算 token 数量**：`estimateTokenCount` 对每条消息求和
-4. **超限时裁剪**：调用 `runTokenPreflight`，裁剪后将历史写回 `SessionStore`
-5. **链内兜底**：`createTrimmer` 作为 Runnable 链的一个步骤，提供第二层保护
+2. **ExecutionEngine 内部处理**：引擎负责 token 估算和裁剪
+3. **链内兜底**：`createTrimmer` 作为 Runnable 链的一个步骤，提供第二层保护
+
+手动检查 token 状态：
+
+```typescript
+const status = controller.checkTokenLimit([
+  { role: 'user', content: 'Hello' },
+  { role: 'assistant', content: 'Hi there!' },
+]);
+// { total, limit, percentage, exceeded, nearThreshold }
+```
 
 ---
 
@@ -386,12 +574,12 @@ console.log(`本次会话共消耗 ${summary.totalTokens} tokens`);
 
 ### 已知限制
 
-| 限制           | 说明                       | 缓解措施                   |
-| -------------- | -------------------------- | -------------------------- |
-| 进程内存储     | 重启后历史清空             | 可替换为 Redis/数据库后端  |
-| token 估算精度 | length / 4 仅近似          | 双层裁剪（预检 + 链内）    |
-| 工具调用历史   | 仅自动追踪 human/AI 消息对 | 通过 finalInput 注入上下文 |
-| 成本计算       | totalCost 固定为 0         | 预留接口，后续可接入       |
+| 限制           | 说明                       | 缓解措施                      |
+| -------------- | -------------------------- | ----------------------------- |
+| 进程内存储     | 重启后历史清空             | 可替换为 Redis/数据库后端     |
+| token 估算精度 | CJK 字符估算仍有误差       | 双层裁剪（预检 + 链内）       |
+| 工具调用历史   | 仅自动追踪 human/AI 消息对 | 通过 ExecutionEngine 管理     |
+| 向量数据库依赖 | 需要 Supabase + pgvector   | 提供降级机制（degraded 模式） |
 
 ---
 

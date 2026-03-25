@@ -2,7 +2,7 @@
 
 ## 概述
 
-ExecutionEngine 是 Agent 系统的核心执行引擎，实现了 OBSERVE → PLAN → ACT → REFLECT 的状态机循环。它负责协调工具执行、记忆管理、反思决策和终止条件检查。
+ExecutionEngine 是 Agent 系统的核心执行引擎，实现了 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 的状态机循环。它负责协调工具执行、记忆管理、反思决策和终止条件检查。
 
 ## 类定义
 
@@ -16,17 +16,22 @@ class ExecutionEngine {
 
 ### ExecutionConfig
 
-| 参数                 | 类型   | 默认值  | 说明                  |
-| -------------------- | ------ | ------- | --------------------- |
-| maxIterations        | number | 10      | 最大迭代次数          |
-| maxExecutionTime     | number | 300000  | 最大执行时间（毫秒）  |
-| maxWorkingMemorySize | number | 10      | 工作记忆最大消息数    |
-| maxToolMemorySize    | number | 100     | 工具记忆最大记录数    |
-| summaryTriggerRound  | number | 5       | 触发摘要的轮数间隔    |
-| summaryTriggerTokens | number | 100000  | 触发摘要的 Token 阈值 |
-| tokenThreshold       | number | 1000000 | Token 预算阈值        |
-| toolTimeout          | number | 30000   | 工具执行超时（毫秒）  |
-| maxRetryPerTool      | number | 3       | 每个工具最大重试次数  |
+| 参数                    | 类型    | 默认值 | 说明                     |
+| ----------------------- | ------- | ------ | ------------------------ |
+| maxIterations           | number  | 10     | 最大迭代次数             |
+| maxExecutionTime        | number  | 300000 | 最大执行时间（毫秒）     |
+| maxWorkingMemorySize    | number  | 10     | 工作记忆最大消息数       |
+| maxToolMemorySize       | number  | 100    | 工具记忆最大记录数       |
+| summaryTriggerRound     | number  | 5      | 触发摘要的轮数间隔       |
+| summaryTriggerTokens    | number  | 8000   | 触发摘要的 Token 阈值    |
+| tokenThreshold          | number  | 0.9    | Token 预算比例阈值 (0-1) |
+| toolTimeout             | number  | 30000  | 工具执行超时（毫秒）     |
+| maxRetryPerTool         | number  | 3      | 每个工具最大重试次数     |
+| enableParallelExecution | boolean | true   | 是否启用并行工具执行     |
+| maxConcurrentTools      | number  | 5      | 最大并发工具数           |
+| waveTimeout             | number  | 60000  | 波次执行超时（毫秒）     |
+| enableStateProtection   | boolean | true   | 是否启用状态保护         |
+| maxStateSize            | number  | 1000   | 最大状态大小             |
 
 ### ExecutionEngineDeps
 
@@ -40,18 +45,25 @@ interface ExecutionEngineDeps {
     args: Record<string, unknown>
   ) => Promise<string>; // 工具执行函数
   reflectorConfig?: Partial<ReflectorConfig>; // 反思器配置
+  longTermMemoryReader?: {
+    // 长期记忆读取器（可选）
+    search: (query: string, topK?: number) => Promise<MemorySearchResult[]>;
+    formatMemoriesForPrompt: (results: MemorySearchResult[]) => string;
+  };
+  userInfoContext?: string; // 用户信息上下文（可选）
 }
 ```
 
 ## 核心方法
 
-### run(userPrompt: string)
+### run(userPrompt: string, conversationHistory?: Array<{ role: string; content: string }>)
 
 执行 Agent 循环，返回最终答案和执行指标。
 
 **参数：**
 
 - `userPrompt`: 用户输入的提示词
+- `conversationHistory`: 可选的会话历史记录，包含 role 和 content
 
 **返回值：**
 
@@ -75,7 +87,7 @@ console.log(result.metrics);
 
 获取当前执行阶段。
 
-**返回值：** `ExecutionPhase` - OBSERVE | PLAN | ACT | REFLECT
+**返回值：** `ExecutionPhase` - OBSERVE | PLAN | ACT | EVALUATE | REFLECT
 
 ### getIteration()
 
@@ -109,9 +121,11 @@ console.log(result.metrics);
 
 ## 执行流程
 
+执行引擎实现了 **5 阶段状态机循环**：OBSERVE → PLAN → ACT → EVALUATE → REFLECT
+
 ### 1. OBSERVE 阶段
 
-- 收集当前状态快照
+- 收集当前状态快照（StateSnapshot）
 - 生成状态摘要（StateDigest）
 - 检测状态变更（StateDelta）
 - 构建 PlanningContext
@@ -121,11 +135,11 @@ console.log(result.metrics);
 
 - 调用规划器生成计划
 - 解析计划响应
-- 如果是最终答案，直接返回
+- 如果是最终答案（`isFinalAnswer: true`），直接返回
 
 ### 3. ACT 阶段
 
-- 执行工具调用（支持并行）
+- 执行工具调用（支持并行波次执行）
 - 收集工具结果
 - 更新工具记忆和工作记忆
 - 记录执行指标
@@ -143,7 +157,12 @@ console.log(result.metrics);
 
 - 分析工具执行结果
 - 评估信息增长
-- 做出决策：continue / retry / finalize_answer / fallback
+- 做出决策：
+  - `continue`: 继续执行，进入 OBSERVE 阶段
+  - `retry`: 重试指定工具，进入 ACT 阶段
+  - `new_plan`: 重新规划，进入 PLAN 阶段
+  - `finalize_answer`: 生成最终答案并终止
+  - `fallback`: 工具执行失败，触发降级处理
 
 ## 终止条件
 

@@ -47,7 +47,7 @@
 
 - **启动策略**: `spawn` 配置为非分离模式 (`detached: false`)，确保主进程退出时能较好地管理子进程。
 - **存活探测**: 通过 `process.kill(pid, 0)` 发送空信号来检测进程是否存在。这是一种极低开销的跨平台探测方式。
-- **容错与重启**: 监听子进程的 `exit` 事件。若非正常退出（code !== 0），监控器会根据配置的 `maxRestarts` 和 `restartDelay` 触发指数退避（或固定延迟）的重启机制。
+- **容错与重启**: 监听子进程的 `exit` 事件。若非正常退出（code !== 0），监控器会根据配置的 `maxRestarts` 和 `restartDelay` 触发固定延迟的重启机制。
 
 ### 2.2 多维监控机制
 
@@ -62,14 +62,32 @@
 
 ### 2.3 状态数据模型
 
-状态文件包含以下核心指标，用于评估 Worker 的健康度：
+#### 监控器状态 (WorkerMonitor)
+
+监控器维护的 Worker 运行时状态：
+
+```typescript
+interface WorkerStatus {
+  isAlive: boolean; // 是否存活
+  pid: number | null; // 进程 ID
+  uptime: number; // 运行时间（秒）
+  lastHeartbeat: Date | null; // 最后心跳时间
+  restartCount: number; // 重启次数
+  lastError: string | null; // 最后错误信息
+  pendingJobs: number; // 队列积压数量
+}
+```
+
+#### 状态文件数据 (WorkerMonitorUtils)
+
+Worker 写入状态文件的持久化数据（与 WorkerStatus 接口相同）：
 
 ```typescript
 interface WorkerStatus {
   pid: number; // 进程 ID
   timestamp: string; // 最后一次心跳的 ISO 时间戳
   pendingJobs: number; // 向量数据库队列中待处理的任务数
-  parentPid: number; // 记录父进程，用于双向监控
+  parentPid: number | null; // 记录父进程，用于双向监控
   uptime: number; // 累计运行时间（秒）
 }
 ```

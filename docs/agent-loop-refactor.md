@@ -15,11 +15,22 @@
 
 ```typescript
 interface EvaluationScore {
+  accuracy: number; // 准确性评估 (0-1)
+  completeness: number; // 完整性评估 (0-1)
+  efficiency: number; // 效率评估 (0-1)
+  confidence: number; // 置信度评估 (0-1)
   overall: number; // 综合评分 (0-1)
-  successRate: number; // 成功率
-  responseQuality: number; // 响应质量
-  performanceScore: number; // 性能评分
-  warnings: string[]; // 警告信息
+  details: {
+    successCount: number;
+    failureCount: number;
+    totalCount: number;
+    avgExecutionTime: number;
+    informationGrowth: number;
+    planCompletion: number;
+  };
+  suggestions: string[];
+  timestamp: number;
+  iteration: number;
 }
 ```
 
@@ -110,8 +121,10 @@ interface StateDigest {
     successRate: number; // 成功率 (0-1)
     informationGrowth: number; // 信息增长率 (0-1)
   };
+  highlights: string[]; // 亮点列表
   warnings: string[]; // 警告列表
-  suggestions: string[]; // 建议列表
+  timestamp: number; // 时间戳
+  iteration: number; // 迭代次数
 }
 ```
 
@@ -119,13 +132,13 @@ interface StateDigest {
 
 ```typescript
 interface StateDelta {
+  progress_delta: number; // 进度变化
+  new_errors: number; // 新增错误数
+  new_tools_used: boolean; // 是否使用了新工具
+  information_growth_rate: number; // 信息增长率
   should_skip_plan: boolean; // 是否跳过规划
   skip_reason?: string; // 跳过原因
-  memory_growth: {
-    workingMemoryDelta: number; // 工作记忆变化量
-    toolMemoryDelta: number; // 工具记忆变化量
-  };
-  iteration_advanced: boolean; // 是否进入新迭代
+  timestamp: number; // 时间戳
 }
 ```
 
@@ -186,20 +199,91 @@ interface StateDelta {
 
 ## 配置参数
 
-| 参数      | 默认值  | 说明             |
-| --------- | ------- | ---------------- |
-| `verbose` | `false` | 是否输出详细日志 |
+### 执行引擎配置
+
+| 参数                      | 默认值   | 说明                 |
+| ------------------------- | -------- | -------------------- |
+| `maxIterations`           | `10`     | 最大迭代次数         |
+| `maxExecutionTime`        | `300000` | 最大执行时间（毫秒） |
+| `maxWorkingMemorySize`    | `10`     | 工作记忆最大大小     |
+| `maxToolMemorySize`       | `100`    | 工具记忆最大大小     |
+| `summaryTriggerRound`     | `5`      | 触发摘要的轮数       |
+| `summaryTriggerTokens`    | `8000`   | 触发摘要的 Token 数  |
+| `tokenThreshold`          | `0.9`    | Token 预算阈值       |
+| `toolTimeout`             | `30000`  | 工具超时时间（毫秒） |
+| `maxRetryPerTool`         | `3`      | 每个工具最大重试次数 |
+| `enableParallelExecution` | `true`   | 是否启用并行执行     |
+| `maxConcurrentTools`      | `5`      | 最大并发工具数       |
+| `waveTimeout`             | `60000`  | 波次超时时间（毫秒） |
+| `enableStateProtection`   | `true`   | 是否启用状态保护     |
+| `maxStateSize`            | `1000`   | 最大状态大小         |
+| `verbose`                 | `false`  | 是否输出详细日志     |
+
+### 状态摘要生成器配置
+
+| 参数                                | 默认值  | 说明                  |
+| ----------------------------------- | ------- | --------------------- |
+| `enableLLMGeneration`               | `false` | 是否启用 LLM 生成摘要 |
+| `maxHighlights`                     | `5`     | 最大亮点数量          |
+| `maxWarnings`                       | `3`     | 最大警告数量          |
+| `warningThresholds.highFailureRate` | `0.5`   | 高失败率阈值          |
+| `warningThresholds.lowProgressRate` | `0.1`   | 低进度率阈值          |
+| `warningThresholds.highTokenUsage`  | `0.8`   | 高 Token 使用率阈值   |
+
+### 变更检测器配置
+
+| 参数                                          | 默认值 | 说明                     |
+| --------------------------------------------- | ------ | ------------------------ |
+| `progressThreshold`                           | `0.1`  | 进度变化阈值             |
+| `errorThreshold`                              | `3`    | 错误阈值                 |
+| `skipPlanConditions.maxConsecutiveNoProgress` | `2`    | 最大连续无进展次数       |
+| `skipPlanConditions.maxRecentErrors`          | `3`    | 最大近期错误数           |
+| `skipPlanConditions.minIterationsBeforeSkip`  | `2`    | 跳过规划前的最小迭代次数 |
+
+### 评估器配置
+
+| 参数                        | 默认值  | 说明                     |
+| --------------------------- | ------- | ------------------------ |
+| `accuracyWeight`            | `0.3`   | 准确性权重               |
+| `completenessWeight`        | `0.25`  | 完整性权重               |
+| `efficiencyWeight`          | `0.2`   | 效率权重                 |
+| `confidenceWeight`          | `0.25`  | 置信度权重               |
+| `minSuccessThreshold`       | `0.5`   | 最小成功阈值             |
+| `maxExecutionTimeThreshold` | `30000` | 最大执行时间阈值（毫秒） |
 
 ## 日志输出
 
 执行引擎会在 `verbose` 模式下输出各阶段的详细信息：
 
 ```
-[OBSERVE] 迭代 1/10 | 进度: 0%, 成功率: N/A, 信息增长: N/A
-[OBSERVE] 警告: 工作记忆接近限制
+[OBSERVE] 迭代 0: 尚未开始执行，状态良好
+[OBSERVE] 警告: Token 使用量接近上限
+[OBSERVE] 建议跳过规划: 连续 2 次无进展
+[EVALUATE] 评估完成 (迭代 0), 耗时 5ms
+[EVALUATE] 综合评分: 85.0%, 准确性: 90.0%, 完整性: 80.0%, 效率: 85.0%, 置信度: 85.0%
 [EVALUATE] 评估结果良好，进入REFLECT阶段
-[REFLECT] 决策: 重新规划
+[REFLECT] 决策: 生成最终答案
+[Termination] 规划器发出终止信号
 ```
+
+### 各阶段日志说明
+
+**OBSERVE 阶段**：
+
+- 输出状态摘要，包含当前迭代、进度、成功率等信息
+- 如有警告（失败率高、进度缓慢、Token 接近上限等），会输出警告信息
+- 如建议跳过规划，会输出跳过原因
+
+**EVALUATE 阶段**：
+
+- 输出评估完成信息和耗时
+- 输出综合评分和各维度评分（准确性、完整性、效率、置信度）
+- 根据评分输出决策方向（进入 REFLECT 或重新规划）
+
+**REFLECT 阶段**：
+
+- 输出决策结果（`finalize_answer`、`new_plan`、`retry`、`fallback`）
+- 如决策为 retry，会输出需要重试的工具名称
 
 ## 向后兼容性
 

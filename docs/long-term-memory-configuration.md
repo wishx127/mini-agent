@@ -255,15 +255,15 @@ const DEFAULT_LONG_TERM_MEMORY_CONFIG: LongTermMemoryConfig = {
 | `queueMaxAttempts`         | number  | 3                          | 队列最大重试次数     |
 | `queueRetryBackoffMs`      | number  | 30000                      | 队列重试退避时间     |
 | `queueWorkerEnabled`       | boolean | true                       | 是否启用队列消费器   |
-| `queuePollIntervalMs`      | number  | 10000                      | 队列轮询间隔         |
+| `queuePollIntervalMs`      | number  | 5000                       | 队列轮询间隔         |
 
 ### Worker 生命周期与日志
 
 当使用 CLI 启动时，长期记忆 Worker 会被自动拉起并管理生命周期：
 
 - CLI 运行期间，Worker 常驻并持续轮询队列
-- CLI 退出后，Worker 会继续处理队列，**队列清空后自动退出**
-- Worker 日志写入 `memory-worker.log`
+- Worker 由 `LongTermMemoryManager` 内部管理，通过 `startQueueConsumer()` 启动
+- 队列任务通过 `MemoryJobQueue` 持久化到磁盘，路径默认为 `~/.mini-agent/memory-queue`
 
 如需禁用 Worker 自动启动，可将 `queueWorkerEnabled=false`。
 

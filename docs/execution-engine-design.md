@@ -2,7 +2,7 @@
 
 ## 概述
 
-Mini Agent 的执行引擎是一个基于状态机的智能循环系统，实现了 OBSERVE → PLAN → ACT → REFLECT 的执行流程。本文档详细介绍执行引擎的架构设计、状态机模型、内存模型和核心组件。
+Mini Agent 的执行引擎是一个基于状态机的智能循环系统，实现了 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 的执行流程。本文档详细介绍执行引擎的架构设计、状态机模型、内存模型和核心组件。
 
 ## 架构图
 
@@ -11,7 +11,7 @@ Mini Agent 的执行引擎是一个基于状态机的智能循环系统，实现
 │                    ExecutionEngine                           │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
-│  │OBSERVE  │→│  PLAN   │→│   ACT   │→│ REFLECT │       │
+│  │OBSERVE  │→│  PLAN   │→│   ACT   │→│EVALUATE │       │
 │  │ 阶段    │  │  阶段   │  │  阶段   │  │  阶段   │       │
 │  └─────────┘  └─────────┘  └─────────┘  └─────────┘       │
 │       │            │            │            │             │
@@ -19,9 +19,10 @@ Mini Agent 的执行引擎是一个基于状态机的智能循环系统，实现
 │  ┌─────────────────────────────────────────────────┐       │
 │  │              核心组件层                           │       │
 │  ├─────────────────────────────────────────────────┤       │
-│  │  PlanningContextFactory  │  ParallelExecutor    │       │
-│  │  DeduplicationEngine     │  Reflector           │       │
-│  │  TerminationChecker      │  MetricsCollector    │       │
+│  │  StateDigestGenerator  │  DeltaDetector         │       │
+│  │  Reflector             │  Evaluator             │       │
+│  │  TerminationChecker    │  ParallelExecutor      │       │
+│  │  DeduplicationEngine   │  AgentErrorHandler     │       │
 │  └─────────────────────────────────────────────────┘       │
 │       │            │            │            │             │
 │       ↓            ↓            ↓            ↓             │
@@ -47,13 +48,12 @@ Mini Agent 的执行引擎是一个基于状态机的智能循环系统，实现
 ### 状态定义
 
 ```typescript
-enum ExecutionPhase {
-  OBSERVE = 'OBSERVE', // 观察阶段
-  PLAN = 'PLAN', // 规划阶段
-  ACT = 'ACT', // 执行阶段
-  EVALUATE = 'EVALUATE', // 评估阶段
-  REFLECT = 'REFLECT', // 反思阶段
-}
+type ExecutionPhase =
+  | 'OBSERVE' // 观察阶段
+  | 'PLAN' // 规划阶段
+  | 'ACT' // 执行阶段
+  | 'EVALUATE' // 评估阶段
+  | 'REFLECT'; // 反思阶段
 ```
 
 ### 状态转移图
@@ -113,6 +113,339 @@ enum ExecutionPhase {
 | REFLECT  | 返回答案     | 终止     | 反思决定返回答案   |
 | REFLECT  | 降级处理     | 终止     | 反思决定降级       |
 
+## 执行配置
+
+```typescript
+interface ExecutionConfig {
+  // 基础配置
+  maxIterations: number; // 最大迭代次数（默认 10）
+  maxExecutionTime: number; // 最大执行时间（默认 300000ms）
+  maxWorkingMemorySize: number; // 工作记忆大小（默认 10）
+  maxToolMemorySize: number; // 工具记忆大小（默认 100）
+  summaryTriggerRound: number; // 摘要触发轮数（默认 5）
+  summaryTriggerTokens: number; // 摘要触发 Token（默认 8000）
+  tokenThreshold: number; // Token 阈值（默认 0.9）
+  toolTimeout: number; // 工具超时（默认 30000ms）
+  maxRetryPerTool: number; // 每工具最大重试（默认 3）
+
+  // 并行执行配置
+  enableParallelExecution: boolean; // 启用并行执行（默认 true）
+  maxConcurrentTools: number; // 最大并发工具数（默认 5）
+  waveTimeout: number; // 波次超时（默认 60000ms）
+
+  // 安全配置
+  enableStateProtection: boolean; // 启用状态保护（默认 true）
+  maxStateSize: number; // 最大状态大小（默认 1000）
+}
+```
+
+## 核心组件
+
+### 1. ExecutionEngine
+
+```typescript
+class ExecutionEngine {
+  constructor(config: Partial<ExecutionConfig>, deps: ExecutionEngineDeps);
+
+  async run(
+    userPrompt: string,
+    conversationHistory?: Array<{ role: string; content: string }>
+  ): Promise<{
+    finalAnswer: string;
+    metrics: ExecutionMetrics;
+  }>;
+}
+
+interface ExecutionEngineDeps {
+  llm: ChatOpenAI;
+  tools: ToolInfo[];
+  generateSummary: (messages: Message[]) => Promise<string>;
+  executeTool: (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => Promise<string>;
+  reflectorConfig?: Partial<ReflectorConfig>;
+  longTermMemoryReader?: LongTermMemoryReader;
+  userInfoContext?: string;
+}
+```
+
+### 2. StateDigestGenerator
+
+```typescript
+interface StateSnapshot {
+  iteration: number;
+  timestamp: number;
+  workingMemorySize: number;
+  workingMemoryTokens: number;
+  toolMemorySize: number;
+  recentToolRecords: ToolRecord[];
+  currentPlanProgress: {
+    totalSteps: number;
+    completedSteps: number;
+    remainingSteps: number;
+  };
+  failureStats: {
+    totalFailures: number;
+    recentFailures: number;
+    retryCount: number;
+  };
+  performanceStats: {
+    avgToolExecutionTime: number;
+    totalExecutionTime: number;
+  };
+}
+
+interface StateDigest {
+  summary: string;
+  keyMetrics: {
+    progressRate: number;
+    successRate: number;
+    informationGrowth: number;
+  };
+  highlights: string[];
+  warnings: string[];
+  timestamp: number;
+  iteration: number;
+}
+
+class StateDigestGenerator {
+  generate(snapshot: StateSnapshot): StateDigest;
+}
+```
+
+### 3. DeltaDetector
+
+```typescript
+interface StateDelta {
+  progress_delta: number;
+  new_errors: number;
+  new_tools_used: boolean;
+  information_growth_rate: number;
+  should_skip_plan: boolean;
+  skip_reason?: string;
+  timestamp: number;
+}
+
+class DeltaDetector {
+  detect(current: StateSnapshot, previous: StateSnapshot | null): StateDelta;
+}
+```
+
+### 4. Evaluator
+
+```typescript
+interface EvaluationScore {
+  accuracy: number; // 准确性评估 (0-1)
+  completeness: number; // 完整性评估 (0-1)
+  efficiency: number; // 效率评估 (0-1)
+  confidence: number; // 置信度评估 (0-1)
+  overall: number; // 综合评分 (0-1)
+  details: {
+    successCount: number;
+    failureCount: number;
+    totalCount: number;
+    avgExecutionTime: number;
+    informationGrowth: number;
+    planCompletion: number;
+  };
+  suggestions: string[];
+  timestamp: number;
+  iteration: number;
+}
+
+interface EvaluationContext {
+  currentPlan: Plan | null;
+  toolResults: Array<{
+    toolName: string;
+    status: string;
+    result?: string;
+    error?: string;
+    executionTime?: number;
+  }>;
+  toolMemory: ToolRecord[];
+  stateSnapshot: StateSnapshot;
+  iteration: number;
+  maxIterations: number;
+  metrics: ExecutionMetrics;
+}
+
+class Evaluator {
+  constructor(config?: Partial<EvaluatorConfig>);
+  evaluate(context: EvaluationContext): EvaluationScore;
+}
+```
+
+### 5. Reflector
+
+```typescript
+type ReflectionDecision =
+  | 'continue' // 继续执行
+  | 'retry' // 重试工具
+  | 'new_plan' // 重新规划
+  | 'finalize_answer' // 生成最终答案
+  | 'fallback'; // 降级处理
+
+interface ReflectionResult {
+  decision: ReflectionDecision;
+  reasoning: string;
+  shouldRetryTools?: string[];
+  confidence: number;
+  informationGrowth?: number;
+  errorAttribution?: ErrorAttribution;
+  detailedReasoning?: ReflectionReasoning;
+  failure_reflection?: FailureReflection;
+  success_reflection?: SuccessReflection;
+}
+
+interface ReflectionContext {
+  currentPlan: Plan | null;
+  toolResults: Array<{
+    toolName: string;
+    status: string;
+    result?: string;
+    error?: string;
+    executionTime?: number;
+  }>;
+  iteration: number;
+  maxIterations: number;
+  toolMemory: ToolRecord[];
+  remainingRetryBudget: number;
+}
+
+class Reflector {
+  constructor(config?: Partial<ReflectorConfig>);
+  reflect(context: ReflectionContext): Promise<ReflectionResult>;
+}
+```
+
+### 6. ParallelExecutor
+
+```typescript
+interface ExecutionWave {
+  waveIndex: number;
+  steps: PlanStep[];
+}
+
+interface WaveExecutionResult {
+  waveIndex: number;
+  results: ToolExecutionResult[];
+  executionTime: number;
+}
+
+// 解析依赖图
+function parseDependencyGraph(plan: Plan): Map<string, Set<string>>;
+
+// 拓扑排序
+function topologicalSort(steps: PlanStep[]): PlanStep[];
+
+// 将步骤分组为执行波次
+function groupIntoWaves(steps: PlanStep[]): ExecutionWave[];
+
+// 构建执行波次（入口函数）
+function buildExecutionWaves(plan: Plan): ExecutionWave[];
+
+// 解析参数中的占位符
+function resolveDependencies(
+  stepArgs: Record<string, unknown>,
+  previousResults: Map<string, ToolExecutionResult>
+): Record<string, unknown>;
+
+// 执行单个波次
+function executeWave(
+  wave: ExecutionWave,
+  toolExecutor: (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => Promise<string>,
+  previousResults: Map<string, ToolExecutionResult>,
+  config: {
+    toolTimeout: number;
+    maxConcurrentTools: number;
+    waveTimeout: number;
+  }
+): Promise<WaveExecutionResult>;
+
+// 执行所有波次（主入口）
+function executeAllWaves(
+  waves: ExecutionWave[],
+  toolExecutor: (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => Promise<string>,
+  config: {
+    toolTimeout: number;
+    maxConcurrentTools: number;
+    waveTimeout: number;
+  }
+): Promise<{
+  results: ToolExecutionResult[];
+  duration: number;
+}>;
+```
+
+### 7. TerminationChecker
+
+```typescript
+interface TerminationConfig {
+  maxIterations: number;
+  maxExecutionTime: number;
+  maxTokens: number;
+  tokenBudgetThreshold: number;
+  similarityThreshold: number;
+  noGrowthIterationsRequired: number;
+  failureBudget: number;
+  warningThresholdRatio: number;
+  maxConsecutiveFailures: number;
+  consecutiveFailuresRequired: number;
+}
+
+interface TerminationCheckResult {
+  shouldTerminate: boolean;
+  reason?: TerminationReason;
+  message?: string;
+}
+
+type TerminationReason =
+  | 'planner_final_high_confidence'
+  | 'planner_final_medium_confidence'
+  | 'max_iterations_reached'
+  | 'no_information_growth'
+  | 'convergence_detected'
+  | 'token_limit_exceeded'
+  | 'execution_timeout'
+  | 'retry_budget_exhausted'
+  | 'all_tools_failed'
+  | 'system_error';
+
+class TerminationChecker {
+  constructor(config?: Partial<TerminationConfig>);
+
+  updateIteration(): void;
+  recordFailure(): void;
+  recordSuccess(): void;
+  recordInformationGrowth(growth: number): void;
+
+  check(params: {
+    plannerDecision?: string;
+    plannerConfidence?: number;
+    tokenCount?: number;
+  }): TerminationCheckResult;
+
+  getStatus(): {
+    iteration: number;
+    elapsedTime: number;
+    failureCount: number;
+    consecutiveNoGrowthCount: number;
+    lastInformationGrowth: number;
+    isNearLimit: boolean;
+  };
+
+  getTerminationHistory(): TerminationCheckResult[];
+  reset(): void;
+}
+```
+
 ## 内存模型
 
 ### 内存层次结构
@@ -163,24 +496,23 @@ enum ExecutionPhase {
 class ConversationHistory {
   private messages: Message[] = [];
   private maxSize: number;
-  private tokenManager: TokenManager;
+  private maxTokens: number;
 
-  // FIFO 淘汰
-  append(message: Message): void {
-    this.messages.push(message);
-    if (this.messages.length > this.maxSize) {
-      this.messages.shift(); // 移除最旧的消息
-    }
-  }
+  constructor(maxSize: number = 50, maxTokens: number = 4000);
 
-  // Token 限制
-  async appendWithTokenCheck(message: Message): Promise<void> {
-    const estimatedTokens = this.tokenManager.estimateTokens(message);
-    if (this.getCurrentTokens() + estimatedTokens > this.tokenThreshold) {
-      await this.generateSummary();
-    }
-    this.append(message);
-  }
+  addMessage(message: Omit<Message, 'timestamp'>): void;
+  addUserMessage(content: string): void;
+  addAssistantMessage(content: string): void;
+  addToolMessage(content: string, toolCallId: string, toolName: string): void;
+
+  getMessages(): Message[];
+  getRecentMessages(limit: number): Message[];
+  getMessagesAsBaseMessages(): BaseMessage[];
+
+  clear(): void;
+  size(): number;
+  estimateTokens(): number;
+  exportToJSON(): string;
 }
 ```
 
@@ -189,49 +521,32 @@ class ConversationHistory {
 ```typescript
 class ToolMemory {
   private records: ToolRecord[] = [];
-  private hashIndex: Map<string, string> = new Map();
   private maxSize: number;
-  private retentionPeriod: number;
+  private recentQueryLimit: number;
 
-  // 去重检查
-  checkDuplicate(toolName: string, args: Record<string, unknown>): boolean {
-    const hash = this.calculateInputHash(toolName, args);
-    return this.hashIndex.has(hash);
-  }
+  constructor(maxSize: number = 100, recentQueryLimit: number = 5);
 
-  // 记录工具调用
-  record(
+  addRecord(record: Omit<ToolRecord, 'inputHash' | 'timestamp'>): void;
+  getRecords(): ToolRecord[];
+  getRecentRecords(limit: number): ToolRecord[];
+  findDuplicate(
     toolName: string,
-    args: Record<string, unknown>,
-    result: ToolResult
-  ): void {
-    const record: ToolRecord = {
-      toolName,
-      args,
-      result,
-      timestamp: Date.now(),
-      inputHash: this.calculateInputHash(toolName, args),
-    };
-
-    this.records.push(record);
-    this.hashIndex.set(record.inputHash, record.toolName);
-
-    // 清理过期记录
-    this.cleanupExpiredRecords();
-  }
-
-  // 清理策略
-  private cleanupExpiredRecords(): void {
-    const cutoff = Date.now() - this.retentionPeriod;
-    this.records = this.records.filter((r) => r.timestamp > cutoff);
-
-    if (this.records.length > this.maxSize) {
-      this.records = this.records.slice(-this.maxSize);
-    }
-
-    // 重建索引
-    this.rebuildIndex();
-  }
+    arguments_: Record<string, unknown>
+  ): ToolRecord | null;
+  getToolStats(toolName: string): {
+    successCount: number;
+    failureCount: number;
+    avgExecutionTime: number;
+  };
+  getFailureCount(toolName: string): number;
+  queryToolMemory(
+    toolName?: string,
+    inputHash?: string,
+    limit?: number
+  ): ToolRecord[];
+  clear(): void;
+  size(): number;
+  exportToJSON(): string;
 }
 ```
 
@@ -240,491 +555,160 @@ class ToolMemory {
 ```typescript
 class SummaryMemory {
   private summaries: Summary[] = [];
-  private triggerRound: number;
-  private triggerTokens: number;
+  private maxSize: number;
 
-  // 生成摘要
-  async generate(
-    conversationHistory: ConversationHistory,
-    toolMemory: ToolMemory
-  ): Promise<Summary> {
-    const context = this.buildContext(conversationHistory, toolMemory);
-    const content = await this.llmGenerateSummary(context);
+  constructor(maxSize: number = 20);
 
-    const summary: Summary = {
-      content,
-      timestamp: Date.now(),
-      roundCount: conversationHistory.getRoundCount(),
-      tokenCount: this.tokenManager.countTokens(content),
-    };
+  addSummary(summary: Omit<Summary, 'id' | 'timestamp'>): void;
+  getSummaries(): Summary[];
+  getLatestSummary(): Summary | null;
+  clear(): void;
+  size(): number;
+  exportToJSON(): string;
+}
+```
 
-    this.summaries.push(summary);
-    return summary;
+## 执行流程示例
+
+### 场景：用户询问天气
+
+```
+1. OBSERVE
+   - 收集状态快照
+   - 生成状态摘要
+   - 检测状态变更
+   - 更新工作记忆（添加用户消息）
+
+2. PLAN
+   - 构建规划上下文
+   - 调用 LLM 生成计划
+   - 解析计划响应
+
+3. ACT
+   - 调用 tavily 搜索工具
+   - 获取天气信息
+
+4. EVALUATE
+   - 评估工具执行结果
+   - 计算评分 (假设 0.9)
+   - 评分 >= 0.8，决定进入 REFLECT
+
+5. REFLECT
+   - 分析执行结果
+   - 决策：finalize_answer
+   - 生成最终答案
+
+6. 终止
+   - 返回最终答案和执行指标
+```
+
+### 场景：工具执行失败
+
+```
+1-3. OBSERVE, PLAN, ACT (同上的前几步)
+
+4. EVALUATE
+   - 评估工具执行结果
+   - 计算评分 (假设 0.3)
+   - 评分 < 0.4，决定进入 PLAN 重新规划
+
+5. PLAN
+   - 使用更新后的上下文重新规划
+   - 可能选择不同工具或参数
+
+6. EVALUATE
+   - 再次评估
+
+7. REFLECT
+   - 根据评估结果决定是否继续
+```
+
+## 错误处理
+
+### AgentErrorHandler
+
+```typescript
+class AgentErrorHandler {
+  handle(error: Error, context: ErrorContext): ErrorResult;
+  classify(error: Error): ErrorType;
+  recover(error: Error, context: ErrorContext): RecoveryAction;
+}
+
+type ErrorType = 'network' | 'timeout' | 'parameter' | 'unknown';
+
+type RecoveryAction =
+  | { type: 'retry'; delay: number }
+  | { type: 'fallback'; alternative: string }
+  | { type: 'abort'; reason: string };
+```
+
+## 指标收集
+
+### ExecutionMetrics
+
+```typescript
+interface ExecutionMetrics {
+  startTime: number;
+  endTime?: number;
+  totalDuration?: number;
+  iterationCount: number;
+  toolSuccessCount: number;
+  toolFailureCount: number;
+  toolResults: Array<{
+    toolName: string;
+    success: boolean;
+    executionTime: number;
+    isDuplicate?: boolean;
+  }>;
+  phaseTimings: Record<string, number>;
+  terminationReason?: string;
+  tokenUsage?: {
+    input: number;
+    output: number;
+    total: number;
+  };
+}
+```
+
+## 扩展点
+
+### 自定义执行阶段
+
+```typescript
+interface ExecutionPhaseHandler {
+  name: ExecutionPhase;
+  execute(context: PhaseContext): Promise<PhaseResult>;
+}
+
+class CustomPhaseHandler implements ExecutionPhaseHandler {
+  name = 'CUSTOM';
+
+  async execute(context: PhaseContext): Promise<PhaseResult> {
+    // 自定义阶段逻辑
+    return { nextPhase: 'NEXT_PHASE' };
   }
+}
+```
 
-  // 触发检查
-  shouldTrigger(conversationHistory: ConversationHistory): boolean {
-    // 基于轮数
-    if (conversationHistory.getRoundCount() % this.triggerRound === 0) {
-      return true;
-    }
+### 自定义终止条件
 
-    // 基于 Token
-    const estimatedTokens = this.tokenManager.estimateTokens(
-      conversationHistory.getText()
-    );
-    if (estimatedTokens > this.triggerTokens) {
-      return true;
-    }
+```typescript
+interface TerminationCondition {
+  name: string;
+  check(context: ExecutionContext): boolean;
+  getReason(): string;
+}
 
+class CustomTerminationCondition implements TerminationCondition {
+  name = 'custom';
+
+  check(context: ExecutionContext): boolean {
+    // 自定义终止检查
     return false;
   }
-}
-```
 
-## 核心组件
-
-### 1. ExecutionEngine
-
-执行引擎的主类，负责协调各个阶段的执行。
-
-```typescript
-class ExecutionEngine {
-  private phase: ExecutionPhase = ExecutionPhase.OBSERVE;
-  private iteration: number = 0;
-  private startTime: number = 0;
-
-  // 记忆系统
-  private conversationHistory: ConversationHistory;
-  private toolMemory: ToolMemory;
-  private summaryMemory: SummaryMemory;
-
-  // 核心组件
-  private planningContextFactory: PlanningContextFactory;
-  private parallelExecutor: ParallelExecutor;
-  private deduplicationEngine: DeduplicationEngine;
-  private reflector: Reflector;
-  private terminationChecker: TerminationChecker;
-  private metricsCollector: MetricsCollector;
-
-  async run(userPrompt: string): Promise<ExecutionResult> {
-    this.initialize(userPrompt);
-
-    while (!this.shouldTerminate()) {
-      switch (this.phase) {
-        case ExecutionPhase.OBSERVE:
-          await this.observe();
-          this.phase = ExecutionPhase.PLAN;
-          break;
-
-        case ExecutionPhase.PLAN:
-          const plan = await this.plan();
-          if (plan.isFinalAnswer) {
-            return this.finalize(plan.finalAnswer);
-          }
-          this.currentPlan = plan;
-          this.phase = ExecutionPhase.ACT;
-          break;
-
-        case ExecutionPhase.ACT:
-          await this.act();
-          this.phase = ExecutionPhase.REFLECT;
-          break;
-
-        case ExecutionPhase.REFLECT:
-          const reflection = await this.reflect();
-          this.phase = this.handleReflection(reflection);
-          break;
-      }
-
-      this.iteration++;
-      this.metricsCollector.recordIteration(this.iteration);
-    }
-
-    return this.finalizeWithTermination();
+  getReason(): string {
+    return 'Custom termination reason';
   }
 }
 ```
-
-### 2. PlanningContextFactory
-
-负责构建规划上下文，为 LLM 提供完整的执行信息。
-
-```typescript
-class PlanningContextFactory {
-  async build(
-    conversationHistory: ConversationHistory,
-    toolMemory: ToolMemory,
-    summaryMemory: SummaryMemory,
-    deduplicationEngine: DeduplicationEngine,
-    availableTools: ToolInfo[]
-  ): Promise<PlanningContext> {
-    return {
-      conversationHistory: conversationHistory.getRecent(10),
-      conversationSummary: await summaryMemory.getLatest(),
-      toolHistory: toolMemory.getSummary(),
-      deduplicationStats: deduplicationEngine.getStats(),
-      availableTools: availableTools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      })),
-      executionConstraints: this.buildConstraints(),
-      previousErrors: toolMemory.getRecentErrors(5),
-    };
-  }
-}
-```
-
-### 3. ParallelExecutor
-
-负责并行执行工具调用，支持依赖图解析和波次执行。
-
-```typescript
-class ParallelExecutor {
-  async execute(
-    plan: Plan,
-    executeTool: ExecuteToolFunction
-  ): Promise<ToolResult[]> {
-    // 构建依赖图
-    const graph = this.buildDependencyGraph(plan.steps);
-
-    // 拓扑排序
-    const waves = this.topologicalSort(graph);
-
-    // 波次执行
-    const results: ToolResult[] = [];
-    for (const wave of waves) {
-      const waveResults = await Promise.allSettled(
-        wave.map((step) => this.executeStep(step, executeTool))
-      );
-      results.push(...waveResults.map((r) => this.normalizeResult(r)));
-    }
-
-    return results;
-  }
-
-  private buildDependencyGraph(steps: PlanStep[]): DependencyGraph {
-    const graph = new DependencyGraph();
-
-    for (const step of steps) {
-      graph.addNode(step.id, step);
-
-      for (const dep of step.dependencies) {
-        graph.addEdge(dep, step.id);
-      }
-    }
-
-    return graph;
-  }
-}
-```
-
-### 4. DeduplicationEngine
-
-负责工具调用去重，避免重复执行相同的工具调用。
-
-```typescript
-class DeduplicationEngine {
-  private records: Map<string, ToolRecord> = new Map();
-  private retryBudgets: Map<string, number> = new Map();
-
-  check(toolName: string, args: Record<string, unknown>): DedupResult {
-    const hash = this.calculateInputHash(toolName, args);
-    const key = `${toolName}:${hash}`;
-
-    if (this.records.has(key)) {
-      const record = this.records.get(key)!;
-      const budget = this.retryBudgets.get(key) || 0;
-
-      if (budget > 0) {
-        this.retryBudgets.set(key, budget - 1);
-        return { isDuplicate: true, shouldRetry: true, budget };
-      }
-
-      return { isDuplicate: true, shouldRetry: false, budget: 0 };
-    }
-
-    return { isDuplicate: false, shouldRetry: false };
-  }
-
-  record(
-    toolName: string,
-    args: Record<string, unknown>,
-    result: ToolResult
-  ): void {
-    const hash = this.calculateInputHash(toolName, args);
-    const key = `${toolName}:${hash}`;
-
-    this.records.set(key, {
-      toolName,
-      args,
-      result,
-      timestamp: Date.now(),
-    });
-
-    this.retryBudgets.set(key, this.maxRetryPerTool);
-  }
-}
-```
-
-### 5. Reflector
-
-负责反思阶段的决策，分析工具执行结果并做出决策。
-
-```typescript
-class Reflector {
-  private strategy: ReflectorStrategy;
-
-  async reflect(
-    toolResults: ToolResult[],
-    planningContext: PlanningContext,
-    metrics: ExecutionMetrics
-  ): Promise<ReflectionResult> {
-    const successRate = this.calculateSuccessRate(toolResults);
-    const informationGrowth = this.calculateInformationGrowth(toolResults);
-    const confidence = this.calculateConfidence(toolResults, metrics);
-
-    const decision = this.makeDecision(
-      successRate,
-      informationGrowth,
-      confidence,
-      this.strategy
-    );
-
-    return {
-      decision,
-      confidence,
-      successRate,
-      informationGrowth,
-      reasons: this.buildReasons(decision, successRate, informationGrowth),
-      diagnosticData: {
-        toolResults: toolResults.map((r) => ({
-          toolName: r.toolName,
-          success: r.success,
-          duration: r.duration,
-        })),
-        metrics,
-      },
-    };
-  }
-
-  private makeDecision(
-    successRate: number,
-    informationGrowth: number,
-    confidence: number,
-    strategy: ReflectorStrategy
-  ): ReflectionDecision {
-    // 保守策略
-    if (strategy === 'conservative') {
-      if (successRate < 0.5) return 'fallback';
-      if (informationGrowth < 0.1) return 'finalize_answer';
-      if (confidence < 0.6) return 'retry';
-    }
-
-    // 平衡策略
-    if (strategy === 'balanced') {
-      if (successRate < 0.3) return 'fallback';
-      if (informationGrowth < 0.05) return 'finalize_answer';
-      if (confidence < 0.5) return 'retry';
-    }
-
-    // 激进策略
-    if (strategy === 'aggressive') {
-      if (successRate < 0.1) return 'fallback';
-      if (informationGrowth < 0.01) return 'finalize_answer';
-    }
-
-    return 'continue';
-  }
-}
-```
-
-### 6. TerminationChecker
-
-负责检查终止条件，支持多种语义终止条件。
-
-```typescript
-class TerminationChecker {
-  check(
-    phase: ExecutionPhase,
-    iteration: number,
-    startTime: number,
-    metrics: ExecutionMetrics,
-    plan?: Plan
-  ): TerminationResult {
-    const reasons: string[] = [];
-
-    // 规划器信号终止
-    if (plan?.isFinalAnswer) {
-      reasons.push('规划器返回最终答案');
-    }
-
-    // 最大迭代次数
-    if (iteration >= this.config.maxIterations) {
-      reasons.push(`达到最大迭代次数 (${this.config.maxIterations})`);
-    }
-
-    // 最大执行时间
-    const elapsed = Date.now() - startTime;
-    if (elapsed >= this.config.maxExecutionTime) {
-      reasons.push(`达到最大执行时间 (${this.config.maxExecutionTime}ms)`);
-    }
-
-    // Token 预算
-    if (metrics.tokenUsage >= this.config.tokenThreshold) {
-      reasons.push(`Token 使用量超过阈值 (${this.config.tokenThreshold})`);
-    }
-
-    // 工具失败预算
-    if (metrics.failedTools >= this.config.maxFailedTools) {
-      reasons.push(`工具失败次数超过预算 (${this.config.maxFailedTools})`);
-    }
-
-    return {
-      shouldTerminate: reasons.length > 0,
-      reasons,
-      priority: this.calculatePriority(reasons),
-    };
-  }
-}
-```
-
-## 数据流
-
-### 完整执行流程
-
-```
-用户输入
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    OBSERVE 阶段                              │
-├─────────────────────────────────────────────────────────────┤
-│  1. 收集当前状态                                             │
-│  2. 更新工作记忆                                             │
-│  3. 构建 PlanningContext                                     │
-│  4. 检查终止条件                                             │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    PLAN 阶段                                 │
-├─────────────────────────────────────────────────────────────┤
-│  1. 调用 LLM 生成计划                                        │
-│  2. 解析计划响应                                             │
-│  3. 验证计划合法性                                           │
-│  4. 返回计划或最终答案                                       │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    ACT 阶段                                  │
-├─────────────────────────────────────────────────────────────┤
-│  1. 检查工具去重                                             │
-│  2. 构建依赖图                                               │
-│  3. 生成执行波次                                             │
-│  4. 并行执行工具                                             │
-│  5. 收集工具结果                                             │
-│  6. 更新工具记忆                                             │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    REFLECT 阶段                              │
-├─────────────────────────────────────────────────────────────┤
-│  1. 评估工具执行成功率                                       │
-│  2. 分析信息增长                                             │
-│  3. 检测重复调用模式                                         │
-│  4. 做出决策 (continue/retry/finalize/fallback)             │
-│  5. 记录反思指标                                             │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-是否继续循环?
-    │
-    ├── 否 → 返回最终答案
-    │
-    └── 是 → 返回 OBSERVE 阶段
-```
-
-## 性能优化
-
-### 1. 并行执行优化
-
-- 自动识别可并行执行的工具
-- 使用 Promise.allSettled 处理部分失败
-- 波次级超时控制
-
-### 2. 缓存优化
-
-- PlanningContext 缓存
-- 工具定义摘要缓存
-- 去重结果缓存
-
-### 3. 内存优化
-
-- FIFO 淘汰策略
-- 定期清理过期记录
-- Token 限制管理
-
-### 4. 指标采样
-
-- 关键指标全量采样
-- 详细指标概率采样
-- 异常指标阈值采样
-
-## 扩展性
-
-### 1. 自定义反思策略
-
-```typescript
-const customStrategy: ReflectorStrategy = {
-  name: 'custom',
-  evaluate: (metrics) => {
-    // 自定义评估逻辑
-    return decision;
-  },
-};
-
-const engine = new ExecutionEngine({
-  reflectorStrategy: customStrategy,
-});
-```
-
-### 2. 自定义终止条件
-
-```typescript
-const customTermination: TerminationCondition = {
-  name: 'custom',
-  check: (context) => {
-    // 自定义检查逻辑
-    return { shouldTerminate: false, reasons: [] };
-  },
-};
-
-const engine = new ExecutionEngine({
-  terminationConditions: [customTermination],
-});
-```
-
-### 3. 自定义记忆策略
-
-```typescript
-const customMemoryStrategy: MemoryStrategy = {
-  cleanup: (memory) => {
-    // 自定义清理逻辑
-  },
-  compress: (memory) => {
-    // 自定义压缩逻辑
-  },
-};
-
-const engine = new ExecutionEngine({
-  memoryStrategy: customMemoryStrategy,
-});
-```
-
-## 总结
-
-Mini Agent 的执行引擎通过状态机模型实现了智能的执行循环，通过分层内存系统管理执行上下文，通过并行执行和多种优化策略提升了执行性能。该设计具有良好的扩展性，支持自定义策略和条件，能够适应不同的使用场景。

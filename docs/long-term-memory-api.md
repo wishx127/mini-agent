@@ -336,7 +336,7 @@ const preferences = await manager.getByType('user_preference', 10);
 const sessionMemories = await manager.getBySession('session-123');
 ```
 
-#### getStats(): Promise<MemoryStats>
+#### getStats(): MemoryStats
 
 获取记忆统计信息。
 
@@ -349,6 +349,16 @@ interface MemoryStats {
   active: number;
   expired: number;
 }
+```
+
+**注意：** 当前实现返回简化统计（所有值为 0），实际统计功能待实现。
+
+#### enqueueExtraction(userMessage: string, aiResponse: string, sessionId?: string): Promise<void>
+
+将记忆提取任务入队（异步处理）。
+
+```typescript
+await manager.enqueueExtraction('用户消息', 'AI 回复', 'session-123');
 ```
 
 #### extractAndStore(userMessage: string, aiResponse: string, sessionId?: string): Promise<MemoryExtractionResult>
@@ -403,21 +413,44 @@ const result = await extractor.extract(
 
 ### MemoryDispatcher
 
-记忆派发器，协调记忆存储流程。
+记忆派发器，仅负责将记忆提取任务入队，不做任何消费或 LLM 提取。
 
 #### 构造函数
 
 ```typescript
-constructor(config?: { enabled?: boolean })
+constructor(config: MemoryDispatcherConfig)
 ```
 
-#### dispatch(userMessage: string, aiResponse: string, sessionId?: string): Promise<void>
+**MemoryDispatcherConfig 接口：**
 
-派发记忆提取任务。
+```typescript
+interface MemoryDispatcherConfig {
+  enabled: boolean;
+  queueDir?: string;
+}
+```
+
+#### enqueue(payload: MemoryJobPayload): Promise<void>
+
+将记忆提取任务入队。
 
 ```typescript
 const dispatcher = new MemoryDispatcher({ enabled: true });
-await dispatcher.dispatch('用户消息', 'AI 回复', 'session-123');
+await dispatcher.enqueue({
+  userMessage: '用户消息',
+  aiResponse: 'AI 回复',
+  sessionId: 'session-123',
+});
+```
+
+**MemoryJobPayload 接口：**
+
+```typescript
+interface MemoryJobPayload {
+  userMessage: string;
+  aiResponse: string;
+  sessionId?: string;
+}
 ```
 
 ## 记忆类型

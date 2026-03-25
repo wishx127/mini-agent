@@ -95,6 +95,18 @@
 4. **Phase 4**: 更新 executor 集成熔断器
 5. **Phase 5**: 更新文档和示例
 
+## Documentation Updates
+
+### Tool System Architecture Guide Corrections
+
+The `docs/tool-system-architecture.md` file has been audited against actual implementation. Key corrections made:
+
+1. **ToolCategoryRegistry**: Removed non-existent `rebuildIndex()` method, corrected to `clear()`
+2. **BaseTool.run() execution flow**: Corrected to show only Zod validation (not JSON Schema)
+3. **CircuitBreaker error handling**: Added missing import statements and initialization example
+4. **ToolRegistry.getToolsByCategory()**: Fixed example to use correct single-parameter signature
+5. **JSON Schema usage**: Clarified that `run()` uses Zod only, `validateParams()` uses JSON Schema
+
 ## Open Questions
 
 已确定：

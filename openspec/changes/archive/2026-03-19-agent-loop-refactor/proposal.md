@@ -4,7 +4,7 @@
 
 ## What Changes
 
-- **循环执行模型**：将单次"规划→执行→返回"改为"OBSERVE → PLAN → ACT → REFLECT"状态机，支持多轮迭代直到达成终止条件
+- **循环执行模型**：将单次"规划→执行→返回"改为"OBSERVE → PLAN → ACT → EVALUATE → REFLECT"状态机，支持多轮迭代直到达成终止条件
 - **分层记忆体系**：引入工作记忆、工具记忆、摘要记忆三层结构，防止 token 爆炸同时保留关键上下文
 - **工具重复调用防护**：维护 toolUsageHistory，planner 可识别重复调用并优化工具选择策略
 - **多步计划与并行执行**：planner 支持输出多步计划，act 阶段可并行执行无依赖工具
@@ -16,7 +16,7 @@
 
 ### New Capabilities
 
-- `multi-round-execution`: 显式多轮循环执行机制，支持状态机驱动的 OBSERVE/PLAN/ACT/REFLECT 阶段
+- `multi-round-execution`: 显式多轮循环执行机制，支持状态机驱动的 OBSERVE/PLAN/ACT/EVALUATE/REFLECT 阶段
 - `layered-memory-system`: 分层记忆体系（工作记忆/工具记忆/摘要记忆），防止 token 增长失控
 - `tool-deduplication`: 工具调用去重与智能选择，避免重复调用相同工具
 - `multi-step-planning`: 多步计划生成与置信度评分，支持复杂推理链

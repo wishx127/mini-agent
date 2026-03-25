@@ -6,7 +6,7 @@
 
 #### Scenario: 存储新记忆
 
-- **当** 调用 `LongTermMemoryManager.create(memory)` 时
+- **当** 调用 `LongTermMemoryManager.create(input)` 时
 - **那么** 记忆必须被存储到 Supabase 的 memories 表中
 - **且** 记忆必须包含 id, type, content, embedding, metadata, session_id, created_at 字段
 - **且** embedding 必须由 content 通过 embedding 模型生成
@@ -174,3 +174,33 @@
 - **当** LLM 提取失败或返回无效格式时
 - **那么** 必须记录错误日志但不抛出异常
 - **且** 本次对话不存储长期记忆，仅存储短期记忆
+
+---
+
+## CHANGED Requirements
+
+### Change: 文档与代码实现同步修正 (2026-03-24)
+
+#### MemoryDispatcher 接口修正
+
+- **变更前**: `dispatch(userMessage: string, aiResponse: string, sessionId?: string): Promise<void>`
+- **变更后**: `enqueue(payload: MemoryJobPayload): Promise<void>`
+- **原因**: 与代码实现保持一致，使用 payload 对象封装参数
+
+#### getStats() 方法签名修正
+
+- **变更前**: `getStats(): Promise<MemoryStats>`
+- **变更后**: `getStats(): MemoryStats`
+- **原因**: 当前实现为同步方法，返回简化统计
+
+#### 默认配置值修正
+
+- **变更前**: `queuePollIntervalMs` 默认值为 10000ms
+- **变更后**: `queuePollIntervalMs` 默认值为 5000ms
+- **原因**: 与代码中 `DEFAULT_LONG_TERM_MEMORY_CONFIG` 保持一致
+
+#### Worker 生命周期描述修正
+
+- **变更前**: 描述 CLI 退出后 Worker 处理完队列再退出，日志写入 `memory-worker.log`
+- **变更后**: Worker 由 `LongTermMemoryManager` 内部管理，通过 `startQueueConsumer()` 启动
+- **原因**: 实际实现中 Worker 不由 CLI 直接管理，也没有单独的日志文件

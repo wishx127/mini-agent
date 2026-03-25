@@ -56,3 +56,11 @@
 - [x] 7.3 编写 executor 集成测试
 - [x] 7.4 更新 README 和 docs\tool-system-architecture.md 添加新功能说明
 - [x] 7.5 为每个新功能添加使用示例
+
+## 8. 文档修正 (后续审计)
+
+- [x] 8.1 修正 ToolCategoryRegistry 方法名 - `rebuildIndex()` → `clear()`
+- [x] 8.2 修正 BaseTool.run() 执行流程 - 移除 JSON Schema 验证路径
+- [x] 8.3 修正 CircuitBreaker 错误处理示例 - 添加导入和初始化代码
+- [x] 8.4 修正 ToolRegistry.getToolsByCategory() 示例 - 使用正确参数签名
+- [x] 8.5 澄清 JSON Schema 使用方式 - `run()` 使用 Zod，`validateParams()` 使用 JSON Schema

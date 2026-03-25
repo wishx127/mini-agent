@@ -4,34 +4,34 @@
 
 ## 架构概述
 
-编排层采用基于状态机的循环执行架构，实现了 OBSERVE → PLAN → ACT → REFLECT 的多轮执行流程。
+编排层采用基于状态机的循环执行架构，实现了 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 的多轮执行流程。
 
 ```
 用户输入 → Controller.execute()
                ↓
           ExecutionEngine.run()
                ↓
-          ┌─────────────────────────────────────┐
-          │  OBSERVE → PLAN → ACT → REFLECT    │
-          │       ↑                   │         │
-          │       └───────────────────┘         │
-          │         (循环直到终止条件满足)        │
-          └─────────────────────────────────────┘
+          ┌─────────────────────────────────────────────┐
+          │  OBSERVE → PLAN → ACT → EVALUATE → REFLECT │
+          │       ↑                             │       │
+          │       └─────────────────────────────┘       │
+          │              (循环直到终止条件满足)          │
+          └─────────────────────────────────────────────┘
                ↓
           返回最终答案或降级处理
 ```
 
 ## 配置说明
 
-编排层支持以下环境变量配置：
+编排层通过 `ModelConfig.orchestration` 进行配置：
 
-| 环境变量                          | 默认值 | 说明                 |
-| --------------------------------- | ------ | -------------------- |
-| `ORCHESTRATION_MAX_ITERATIONS`    | 10     | 最大迭代次数         |
-| `ORCHESTRATION_TIMEOUT`           | 300000 | 执行超时时间（毫秒） |
-| `ORCHESTRATION_TOKEN_THRESHOLD`   | 0.9    | Token 预警阈值       |
-| `ORCHESTRATION_TOOL_TIMEOUT`      | 30000  | 工具执行超时（毫秒） |
-| `ORCHESTRATION_MAX_RESULT_LENGTH` | 4000   | 结果最大字符数       |
+| 配置项            | 默认值 | 说明                 |
+| ----------------- | ------ | -------------------- |
+| `maxIterations`   | 3      | 最大迭代次数         |
+| `timeout`         | 30000  | 执行超时时间（毫秒） |
+| `tokenThreshold`  | 0.9    | Token 预警阈值       |
+| `toolTimeout`     | 30000  | 工具执行超时（毫秒） |
+| `maxResultLength` | 4000   | 结果最大字符数       |
 
 ## 使用示例
 
@@ -42,11 +42,6 @@
 MODEL_BASE_URL=https://api.openai.com/v1
 MODEL_NAME=gpt-3.5-turbo
 MODEL_API_KEY=your-api-key
-
-# 编排层配置
-ORCHESTRATION_MAX_ITERATIONS=10
-ORCHESTRATION_TIMEOUT=300000
-ORCHESTRATION_TOKEN_THRESHOLD=0.9
 ```
 
 ### 编程配置
@@ -79,10 +74,22 @@ console.log(response);
 
 执行引擎是编排层的核心，负责管理多轮循环执行：
 
-- **状态机管理**：维护 OBSERVE → PLAN → ACT → REFLECT 状态转移
+- **状态机管理**：维护 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 状态转移
 - **循环控制**：管理迭代次数和终止条件检查
 - **记忆系统**：协调工作记忆、工具记忆和摘要记忆
 - **并行执行**：支持工具调用的并行执行
+- **状态管理**：通过 StateDigestGenerator 和 DeltaDetector 追踪状态变化
+- **错误处理**：通过 AgentErrorHandler 统一处理执行错误
+
+### Evaluator（评估器）
+
+评估器在 ACT 阶段后执行，对工具执行结果进行快速评估：
+
+- **质量评分**：评估工具执行结果的质量（0-1 分）
+- **决策建议**：根据评分决定下一步动作
+  - 评分 ≥ 0.8：进入 REFLECT 阶段
+  - 评分 < 0.4：直接返回 PLAN 阶段重新规划
+  - 0.4 ≤ 评分 < 0.8：进入 REFLECT 阶段
 
 ### Reflector（反思器）
 
@@ -90,8 +97,11 @@ console.log(response);
 
 - **成功率评估**：分析工具调用的成功/失败情况
 - **信息增长检测**：判断是否获得新信息
-- **错误归因**：分析失败原因（工具/规划器/系统）
+- **错误归因**：分析失败原因（tool/planner/system/none）
 - **决策制定**：选择 continue/retry/new_plan/finalize_answer/fallback
+- **详细推理**：提供结构化的反思结果（ReflectionReasoning）
+- **失败分析**：记录失败类型、根本原因、改进建议（FailureReflection）
+- **成功分析**：记录可复用模式、成功因素（SuccessReflection）
 
 ### ParallelExecutor（并行执行器）
 
@@ -158,6 +168,7 @@ console.log(response);
 
 ```typescript
 interface ExecutionConfig {
+  // 基础配置
   maxIterations: number; // 最大迭代次数（默认 10）
   maxExecutionTime: number; // 最大执行时间（默认 300000ms）
   maxWorkingMemorySize: number; // 工作记忆大小（默认 10）
@@ -168,6 +179,14 @@ interface ExecutionConfig {
   toolTimeout: number; // 工具超时（默认 30000ms）
   maxRetryPerTool: number; // 每工具最大重试（默认 3）
   enableParallelExecution: boolean; // 启用并行执行（默认 true）
+
+  // 并行执行配置
+  maxConcurrentTools: number; // 最大并发工具数（默认 5）
+  waveTimeout: number; // 波次超时（默认 60000ms）
+
+  // 安全配置
+  enableStateProtection: boolean; // 启用状态保护（默认 true）
+  maxStateSize: number; // 最大状态大小（默认 1000）
 }
 ```
 
@@ -179,6 +198,7 @@ interface ReflectorConfig {
   timeoutMs: number; // 反思超时（默认 100ms）
   similarityThreshold: number; // 相似度阈值（默认 0.7）
   maxRetryPerTool: number; // 每工具最大重试（默认 3）
+  verbose?: boolean; // 是否输出详细日志（默认 false）
 }
 ```
 
@@ -209,7 +229,7 @@ console.log(status.metrics);
 //   startTime: 1234567890,
 //   endTime: 1234567900,
 //   totalDuration: 10000,
-//   iterationCount: 3,
+//   iteration: 3,
 //   toolSuccessCount: 5,
 //   toolFailureCount: 1,
 //   toolResults: [...],
@@ -217,6 +237,7 @@ console.log(status.metrics);
 //     OBSERVE: 100,
 //     PLAN: 500,
 //     ACT: 2000,
+//     EVALUATE: 50,
 //     REFLECT: 200
 //   },
 //   terminationReason: 'planner_final'
@@ -233,28 +254,39 @@ const status = controller.getStatus();
 
 console.log('当前状态:', status.state);
 console.log('当前阶段:', status.phase);
-console.log('迭代次数:', status.metrics.iterationCount);
+console.log('迭代次数:', status.metrics.iteration);
 ```
 
-### 查看记忆状态
+### 获取引擎配置
 
 ```typescript
-const engine = controller.getEngine();
+const controller = agent.getController();
+const config = controller.getEngineConfig();
+console.log('引擎配置:', config);
 
-console.log('工作记忆:', engine.getWorkingMemory().size());
-console.log('工具记忆:', engine.getToolMemory().size());
-console.log('摘要记忆:', engine.getSummaryMemory().size());
+// 更新引擎配置
+controller.updateEngineConfig({
+  maxIterations: 15,
+  toolTimeout: 45000,
+});
 ```
 
-### 查看去重状态
+### 获取其他组件
 
 ```typescript
-const engine = controller.getEngine();
-const dedupState = engine.getDeduplicationEngine().getDeduplicationState();
+const controller = agent.getController();
 
-console.log('检测到重复:', dedupState.duplicateCallsDetected);
-console.log('跳过重复:', dedupState.duplicateCallsSkipped);
-console.log('重试预算:', dedupState.toolRetryBudgets);
+// 获取会话存储
+const sessionStore = controller.getSessionStore();
+
+// 获取成本追踪器
+const costTracker = controller.getCostTracker();
+
+// 获取长期记忆读取器
+const longTermMemoryReader = controller.getLongTermMemoryReader();
+
+// 获取记忆分发器
+const memoryDispatcher = controller.getMemoryDispatcher();
 ```
 
 ## 最佳实践

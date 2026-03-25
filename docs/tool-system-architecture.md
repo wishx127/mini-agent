@@ -157,7 +157,11 @@ CLOSED ──────────────────► OPEN
 **错误处理**:
 
 ```typescript
+import { CircuitBreaker, CircuitOpenError } from './circuit-breaker.js';
+
 // 熔断器打开时抛出 CircuitOpenError
+const breaker = new CircuitBreaker('my-tool');
+
 try {
   await breaker.execute(async () => {
     return toolRegistry.executeTool(name, params);
@@ -202,7 +206,7 @@ try {
 │  • getToolsByCategory(tools, category) - 分类查询│
 │  • getToolNamesByCategory(category) - 获取名称   │
 │  • getAllCategories() - 获取所有分类             │
-│  • rebuildIndex(tools) - 重建索引                │
+│  • clear() - 清空所有分类记录                    │
 │                                                  │
 │  性能优化:                                       │
 │  • 使用 Map 缓存分类索引                         │
@@ -244,10 +248,7 @@ class AdminTool extends BaseTool {
 }
 
 // 4. 按分类查询工具
-const externalTools = registry.getToolsByCategory(
-  registry.getTools(),
-  'EXTERNAL_API'
-);
+const externalTools = registry.getToolsByCategory('EXTERNAL_API');
 ```
 
 ### 3.3 BaseTool - 工具基类
@@ -299,14 +300,9 @@ run(params) 调用
 检查 enabled 状态 ──► false ──► 抛出异常
     │ true
     ▼
-参数验证 (JSON Schema 或 Zod)
+参数验证 (Zod Schema)
     │
-    ├─► JSON Schema ──► validateWithJSONSchema()
-    │   ├─► 验证必需参数
-    │   ├─► 验证类型约束
-    │   └─► 验证枚举值/范围等
-    │
-    └─► Zod Schema ──► paramsSchema.parse()
+    └─► paramsSchema.parse()
     │ 成功
     ▼
 调用 execute(params)
@@ -314,6 +310,8 @@ run(params) 调用
     ▼
 返回结果 (string)
 ```
+
+> **注意**: `run()` 方法仅使用 Zod 进行参数验证。如需使用 JSON Schema 验证，请直接调用 `validateParams()` 方法。
 
 ### 3.4 ToolRegistry - 工具注册中心
 
@@ -820,7 +818,8 @@ class JSONSchemaTool extends BaseTool {
   });
 
   async execute(params: Record<string, unknown>) {
-    // 参数会先使用 JSON Schema 验证
+    // 使用 validateParams() 方法可使用 JSON Schema 验证
+    // 使用 run() 方法则使用 Zod 验证
     const { query, limit, type } = params as {
       query: string;
       limit?: number;

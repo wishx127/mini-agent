@@ -14,8 +14,12 @@ interface PlanningContext {
   summaryMemory: Summary[]; // 摘要记忆
   iterationCount: number; // 当前迭代次数
   availableTools: ToolInfo[]; // 可用工具列表
-  remainingIterations: number; // 剩余迭代次数
-  deduplicationInfo: DeduplicationState; // 去重信息
+  remainingTokenBudget?: number; // 剩余 token 预算
+  remainingIterations?: number; // 剩余迭代次数
+  previousPlanConfidence?: number; // 上一轮计划的置信度
+  failedToolsThisRound?: string[]; // 本轮失败的工具列表
+  informationGrowthRate?: number; // 信息增长率
+  deduplicationInfo?: DeduplicationState; // 去重信息
 }
 ```
 
@@ -39,10 +43,12 @@ interface PlanningContext {
 
 ```typescript
 interface Message {
-  role: 'user' | 'assistant' | 'tool';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   toolCallId?: string;
   toolName?: string;
+  timestamp: number;
+  source?: string;
 }
 ```
 
@@ -51,6 +57,8 @@ interface Message {
 - 检查之前的对话以避免重复
 - 利用上下文理解用户意图
 - 注意工具执行结果
+- 利用 `timestamp` 了解消息时间顺序
+- 利用 `source` 追踪消息来源
 
 ### toolMemory
 
@@ -64,10 +72,13 @@ interface ToolRecord {
   toolName: string;
   arguments: Record<string, unknown>;
   result?: string;
-  status: 'success' | 'failure' | 'timeout';
+  status: 'pending' | 'success' | 'failed' | 'timeout';
+  error?: string;
+  timestamp: number;
   iteration: number;
-  executionTime: number;
-  retryCount: number;
+  executionTime?: number;
+  retryCount?: number;
+  inputHash?: string;
 }
 ```
 
@@ -85,12 +96,14 @@ interface ToolRecord {
 
 ```typescript
 interface Summary {
+  id: string;
   timeRange: {
     from: number;
     to: number;
   };
   messageCount: number;
   summary: string;
+  timestamp: number;
   iteration: number;
 }
 ```
@@ -122,6 +135,10 @@ interface ToolInfo {
   name: string;
   description: string;
   enabled: boolean;
+  parameters?: Record<string, unknown>;
+  recentSuccessRate?: number;
+  lastUsedIteration?: number;
+  failureCount?: number;
 }
 ```
 
@@ -130,10 +147,23 @@ interface ToolInfo {
 - 选择合适的工具完成任务
 - 检查工具是否可用
 - 考虑工具的限制
+- 利用 `recentSuccessRate` 评估工具可靠性
+- 参考 `failureCount` 避免使用频繁失败的工具
+- 使用 `parameters` 了解工具参数要求
+
+### remainingTokenBudget
+
+剩余可用的 token 预算。
+
+**使用建议：**
+
+- 评估可用上下文空间
+- 决定是否需要压缩或摘要
+- 控制输出长度
 
 ### remainingIterations
 
-剩余迭代次数。
+剩余迭代次数（可选）。
 
 **使用建议：**
 
@@ -141,16 +171,47 @@ interface ToolInfo {
 - 简化计划以适应剩余迭代
 - 优先执行关键步骤
 
+### previousPlanConfidence
+
+上一轮计划的置信度（可选）。
+
+**使用建议：**
+
+- 评估之前计划的质量
+- 决定是否继续执行或重新规划
+- 调整当前计划的保守程度
+
+### failedToolsThisRound
+
+本轮执行中失败的工具列表（可选）。
+
+**使用建议：**
+
+- 避免重复调用已失败的工具
+- 寻找替代工具或策略
+- 分析失败原因调整计划
+
+### informationGrowthRate
+
+信息增长率（可选），表示最近迭代中获得的新信息量。
+
+**使用建议：**
+
+- 判断任务是否仍在进展
+- 检测停滞状态
+- 决定是否终止或改变策略
+
 ### deduplicationInfo
 
-去重信息，帮助避免重复的工具调用。
+去重信息（可选），帮助避免重复的工具调用。
 
 **DeduplicationState 结构：**
 
 ```typescript
 interface DeduplicationState {
-  recentCalls: Map<string, ToolRecord>;
-  budgetUsed: Map<string, number>;
+  duplicateCallsDetected: number;
+  duplicateCallsSkipped: number;
+  toolRetryBudgets: Record<string, number>;
 }
 ```
 
@@ -214,7 +275,7 @@ function createPlan(context: PlanningContext): Plan {
   const { remainingIterations, iterationCount } = context;
 
   // 剩余迭代不足，返回最终答案
-  if (remainingIterations < 2) {
+  if (remainingIterations && remainingIterations < 2) {
     return {
       steps: [],
       overallConfidence: 0.5,
@@ -367,7 +428,7 @@ function createPlan(context: PlanningContext): Plan {
 
 // ✅ 正确做法
 function createPlan(context: PlanningContext): Plan {
-  const maxSteps = Math.min(5, context.remainingIterations);
+  const maxSteps = Math.min(5, context.remainingIterations ?? 10);
 
   return {
     steps: Array(maxSteps)

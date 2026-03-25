@@ -14,14 +14,15 @@
 
 ## 2. 状态机核心逻辑
 
-- [x] 2.1 创建 ExecutionState 枚举（OBSERVE / PLAN / ACT / REFLECT）
+- [x] 2.1 创建 ExecutionPhase 类型（OBSERVE / PLAN / ACT / EVALUATE / REFLECT）
 - [x] 2.2 创建 ExecutionEngine 类框架，实现主循环逻辑
 - [x] 2.3 实现 OBSERVE 阶段，收集状态和构建 PlanningContext
 - [x] 2.4 实现 PLAN 阶段，调用规划器获取多步计划
 - [x] 2.5 实现 ACT 阶段框架和阶段转移逻辑
-- [x] 2.6 实现 REFLECT 阶段框架和决策逻辑
-- [x] 2.7 实现循环主体，处理阶段转移和终止条件检查
-- [x] 2.8 添加循环计数和状态追踪
+- [x] 2.6 实现 EVALUATE 阶段，评估工具执行结果
+- [x] 2.7 实现 REFLECT 阶段框架和决策逻辑
+- [x] 2.8 实现循环主体，处理阶段转移和终止条件检查
+- [x] 2.9 添加循环计数和状态追踪
 
 ---
 
@@ -40,7 +41,7 @@
 ## 4. 工具去重和智能选择
 
 - [x] 4.1 实现输入哈希计算函数
-- [x] 4.2 创建 DeduplicationEngine 类
+- [x] 4.2 创建 DeltaDetector 类
 - [x] 4.3 实现工具调用去重检查
 - [x] 4.4 实现重试预算管理（per tool）
 - [x] 4.5 实现去重建议和警告逻辑
@@ -66,7 +67,7 @@
 - [x] 6.2 实现错误归因分析（工具/规划器/系统）
 - [x] 6.3 实现信息增长评估（相似度计算）
 - [x] 6.4 实现多维度决策框架（成功率、增长、置信度）
-- [x] 6.5 实现 continue / retry / finalize_answer / fallback 决策
+- [x] 6.5 实现 continue / retry / new_plan / finalize_answer / fallback 决策
 - [x] 6.6 实现置信度驱动的重试策略
 - [x] 6.7 添加详细的决策理由和诊断数据
 
@@ -88,127 +89,90 @@
 
 ## 8. 执行指标和可观测性
 
-- [x] 8.1 创建 ExecutionMetrics 类，支持指标收集
+- [x] 8.1 创建 ExecutionMetricsCollector 类，支持指标收集
 - [x] 8.2 在 OBSERVE 阶段记录时间戳
 - [x] 8.3 在每个阶段完成后记录阶段耗时
 - [x] 8.4 在工具执行后记录工具级指标
 - [x] 8.5 实现指标聚合（工具统计、时间分布等）
 - [x] 8.6 实现成功率和效率指标计算
 - [x] 8.7 实现实时指标回调机制
-- [x] 8.8 实现指标序列化和导出（JSON / CSV）
+- [x] 8.8 实现指标序列化和导出（JSON）
 - [x] 8.9 实现指标查询接口
 
 ---
 
-## 9. 规划器集成和升级
+## 9. 长期记忆管理
 
-- [x] 9.1 更新规划器接口以接收 PlanningContext
-- [x] 9.2 更新规划器以输出新的 Plan 格式（steps + confidence）
-- [x] 9.3 实现规划器输出验证（依赖图合法性）
-- [x] 9.4 实现适配层（如需）支持旧规划器向后兼容
-- [x] 9.5 添加规划器输出的日志和追踪
-
----
-
-## 10. 反思器实现
-
-- [x] 10.1 从 ExecutionEngine 分离反思逻辑到独立 Reflector 类
-- [x] 10.2 实现 reflect() 方法，接收 ACT 结果返回 ReflectionResult
-- [x] 10.3 实现反思决策的可配置策略（conservative / balanced / aggressive）
-- [x] 10.4 实现反思的超时限制（< 100ms）
-- [x] 10.5 添加反思阶段的日志和诊断
+- [x] 9.1 创建 LongTermMemoryManager 类
+- [x] 9.2 实现向量数据库客户端集成
+- [x] 9.3 实现记忆创建（createMemory）
+- [x] 9.4 实现记忆检索（retrieveMemories）
+- [x] 9.5 实现记忆过期处理
+- [x] 9.6 实现记忆元数据管理
 
 ---
 
-## 11. 执行接口和 API 兼容性
+## 10. 可观测性系统
 
-- [x] 11.1 更新 Agent.execute() 方法内部调用新的 ExecutionEngine
-- [x] 11.2 保持外部 execute() 签名不变（prompt + tools）
-- [x] 11.3 将新的 metrics 和 terminationReason 添加到 ExecutionResult
-- [x] 11.4 实现 ExecutionResult 的向后兼容性（旧调用方仍能工作）
-- [x] 11.5 添加可配置参数（maxIterations / maxExecutionTime 等）
-
----
-
-## 12. 测试 - 单元测试
-
-- [x] 12.1 为 ConversationHistory 编写测试
-- [x] 12.2 为 ToolMemory 和去重逻辑编写测试
-- [x] 12.3 为 SummaryMemory 编写测试
-- [x] 12.4 为 PlanningContext 编写测试
-- [x] 12.5 为计划依赖解析编写测试
-- [x] 12.6 为工具结果并行执行编写测试
-- [x] 12.7 为反思决策逻辑编写测试
-- [x] 12.8 为终止条件各个分支编写测试
-- [x] 12.9 为指标收集编写测试
-- [x] 12.10 达到 ExecutionEngine 的 ≥80% 代码覆盖率
+- [x] 10.1 创建 TraceManager 类，管理追踪生命周期
+- [x] 10.2 创建 SpanManager 类，管理跨度生命周期
+- [x] 10.3 创建 PromptManager 类，管理提示词记录
+- [x] 10.4 实现成本计算功能
+- [x] 10.5 实现追踪数据持久化
 
 ---
 
-## 13. 测试 - 集成测试
+## 11. Worker 系统
 
-- [x] 13.1 编写单轮循环测试（快速路径）
-- [x] 13.2 编写多轮循环测试（tool 失败后重试）
-- [x] 13.3 编写并行工具执行测试
-- [x] 13.4 编写 Token 超限压缩测试
-- [x] 13.5 编写最大迭代限制测试
-- [x] 13.6 编写超时处理测试
-- [x] 13.7 编写工具去重测试
-- [x] 13.8 编写完整多步规划执行测试
+- [x] 11.1 创建 WorkerMonitor 类，监控内存 worker
+- [x] 11.2 实现 worker 健康检查
+- [x] 11.3 实现 worker 自动重启机制
+- [x] 11.4 创建 MemoryConsumer 类，处理内存消息
 
 ---
 
-## 14. 测试 - 场景测试
+## 12. 工具系统增强
 
-- [x] 14.1 编写一个简单搜索任务的端到端测试
-- [x] 14.2 编写一个多步推理任务的端到端测试（需多轮）
-- [x] 14.3 编写工具全部失败降级的场景测试
-- [x] 14.4 编写无限重复导致收敛检测的场景测试
-- [x] 14.5 编写 Token 快要耗尽的加速终止测试
-
----
-
-## 15. 文档和日志
-
-- [x] 15.1 编写 ExecutionEngine 的 API 文档
-- [x] 15.2 编写 PlanningContext 的使用指南
-- [x] 15.3 编写规划器升级指南（新格式说明）
-- [x] 15.4 编写调试和追踪指南（如何查看执行过程）
-- [x] 15.5 编写配置参数说明文档
-- [x] 15.6 添加结构化日志示例和推荐做法
-- [x] 15.7 编写性能优化指南
-- [x] 15.8 更新Readme.md，添加新功能和配置参数说明
-- [x] 15.9 在docs目录添加详细的设计文档（包括架构图、状态机、内存模型等）
+- [x] 12.1 创建 BaseTool 抽象类
+- [x] 12.2 创建 ToolRegistry 类，管理工具注册
+- [x] 12.3 创建 ToolCategoryRegistry 类，按类别管理工具
+- [x] 12.4 实现 CircuitBreaker 熔断器模式
+- [x] 12.5 实现工具执行错误分类
 
 ---
 
-## 16. 灰度发布准备
+## 13. 集成和测试
 
-- [x] 16.1 实现特性开关，支持路由旧 vs 新引擎
-- [x] 16.2 实现引擎选择逻辑（canary 5%）
-- [x] 16.3 添加引擎选择的日志和指标
-- [x] 16.4 准备监控和告警配置
-
----
-
-## 17. 性能优化和最终调优
-
-- [x] 17.1 优化 PlanningContext 的构建速度（ToolMemory 使用 slice 替代 shift）
-- [x] 17.2 优化摘要生成的 token 效率（SummaryMemory 使用 slice 替代 shift）
-- [x] 17.3 优化去重检查的性能（ConversationHistory 使用 slice 替代 while 循环）
-- [x] 17.4 测试指标采样的性能影响（优化 Token 估算方法）
-- [x] 17.5 在真实工作负载上进行性能基准测试（优化相似度计算方法）
-- [x] 17.6 调优默认参数（maxIterations / summaryTrigger 等）
+- [x] 13.1 集成 ExecutionEngine 到 Controller
+- [x] 13.2 集成 Memory 系统到 Controller
+- [x] 13.3 集成 Observability 系统到 AgentCore
+- [x] 13.4 编写单元测试（各阶段独立测试）
+- [x] 13.5 编写集成测试（端到端执行流程）
+- [x] 13.6 性能测试和优化
 
 ---
 
-## 18. 代码审查和最终验收
+## 14. 文档更新
 
-- [x] 18.1 请代码审查（核心状态机）
-- [x] 18.2 请代码审查（记忆系统）
-- [x] 18.3 请代码审查（工具执行和并行）
-- [x] 18.4 请代码审查（反思和终止条件）
-- [x] 18.5 修复代码审查反馈（修复 lint 错误）
-- [x] 18.6 最终端到端验收测试（432 个测试全部通过）
-- [x] 18.7 验证向后兼容性（构建成功）
-- [x] 18.8 标记特性为生产就绪
+- [x] 14.1 更新 agent-architecture.md
+- [x] 14.2 更新 execution-engine-design.md
+- [x] 14.3 更新 openspec 下的 spec 文档
+- [x] 14.4 更新 design.md
+- [x] 14.5 更新 tasks.md
+
+## 15. 编排层文档修正（2026-03-24）
+
+- [x] 15.1 修正执行阶段：OBSERVE → PLAN → ACT → EVALUATE → REFLECT
+- [x] 15.2 修正配置方式：使用 `ModelConfig.orchestration` 而非环境变量
+- [x] 15.3 更新 ExecutionConfig 接口：添加 `maxConcurrentTools`, `waveTimeout`, `enableStateProtection`, `maxStateSize`
+- [x] 15.4 添加 Evaluator 组件文档
+- [x] 15.5 更新 Reflector 文档：添加详细推理、失败分析、成功分析
+
+## 16. Worker Monitoring 文档修正（2026-03-24）
+
+- [x] 16.1 修正重启机制描述：固定延迟而非指数退避
+- [x] 16.2 修正状态文件接口名：`WorkerStatusFile` → `WorkerStatus`
+- [x] 15.6 更新 ExecutionEngine 文档：添加状态管理、错误处理
+- [x] 15.7 修正 Controller API：`getEngine()` → `getEngineConfig()` / `updateEngineConfig()`
+- [x] 15.8 添加 Controller 组件获取方法文档：`getSessionStore()`, `getCostTracker()`, `getLongTermMemoryReader()`, `getMemoryDispatcher()`
+- [x] 15.9 更新指标追踪示例：添加 EVALUATE 阶段时间

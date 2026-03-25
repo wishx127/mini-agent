@@ -79,6 +79,26 @@ interface CommandContext {
   clearScreen: () => void; // 清屏
   quit: () => void; // 退出程序
 }
+
+// 命令选择器状态
+interface CommandSelectorState {
+  isActive: boolean; // 是否处于命令选择模式
+  filterText: string; // 当前输入的过滤文本（不含斜杠）
+  filteredCommands: Command[]; // 过滤后的命令列表
+  selectedIndex: number; // 当前选中的索引
+  displayStartIndex: number; // 显示的起始索引（用于滚动）
+}
+
+// 命令选择器配置
+interface CommandSelectorConfig {
+  defaultDisplayCount: number; // 默认显示的命令数量
+  prefix: string; // 命令前缀
+}
+
+// 命令模块接口 - 每个命令文件需要导出的内容
+interface CommandModule {
+  command: CommandDefinition;
+}
 ```
 
 ### 2. 命令注册器 (registry.ts)
@@ -148,6 +168,13 @@ import * as memoryModule from './cmd/memory.js';
 const modules = [helpModule, clearModule, exitModule, memoryModule];
 ```
 
+**现有命令列表**：
+
+- `help` (别名: `h`, `?`) - 显示帮助信息
+- `clear` (别名: `cls`) - 清屏
+- `exit` (别名: `e`) - 退出程序
+- `memory` (别名: `mem`, `status`) - 查看内存状态
+
 ### 4. 命令选择器 (command-selector.ts)
 
 `CommandSelector` 提供交互式命令选择界面：
@@ -160,17 +187,26 @@ class CommandSelector {
   // 停用命令选择模式
   deactivate(): void;
 
-  // 处理输入字符
-  handleInput(char: string): void;
+  // 是否处于激活状态
+  isActive(): boolean;
 
-  // 选择上移
-  selectUp(): void;
+  // 处理字符输入
+  handleCharInput(char: string): void;
 
-  // 选择下移
-  selectDown(): void;
+  // 处理退格键
+  handleBackspace(): void;
+
+  // 处理上箭头
+  handleArrowUp(): void;
+
+  // 处理下箭头
+  handleArrowDown(): void;
 
   // 获取当前选中的命令
-  getSelectedCommand(): Command | undefined;
+  getSelectedCommand(): Command | null;
+
+  // 获取当前过滤文本
+  getFilterText(): string;
 }
 ```
 
@@ -227,14 +263,15 @@ class CommandSelector {
 
 ### 键盘事件处理
 
-| 按键     | 正常模式         | 命令模式       |
-| -------- | ---------------- | -------------- |
-| `/`      | 进入命令模式     | 添加到过滤文本 |
-| `↑/↓`    | -                | 选择命令       |
-| `Enter`  | 发送消息         | 执行命令       |
-| `Esc`    | -                | 退出命令模式   |
-| `Ctrl+C` | 退出程序         | 退出程序       |
-| 其他字符 | 添加到输入缓冲区 | 过滤命令       |
+| 按键        | 正常模式                   | 命令模式                         |
+| ----------- | -------------------------- | -------------------------------- |
+| `/`         | 进入命令模式               | 添加到过滤文本                   |
+| `↑/↓`       | -                          | 选择命令                         |
+| `Enter`     | 发送消息                   | 执行命令                         |
+| `Esc`       | -                          | 退出命令模式                     |
+| `Ctrl+C`    | 退出程序                   | 退出程序                         |
+| `Backspace` | 删除输入缓冲区最后一个字符 | 删除过滤文本，为空时退出命令模式 |
+| 其他字符    | 添加到输入缓冲区           | 过滤命令                         |
 
 ## 开发指南
 
@@ -380,7 +417,14 @@ const ANSI = {
   CURSOR_HIDE: '\x1b[?25l', // 隐藏光标
 };
 
-// 移动到指定列
+// 颜色定义
+const Colors = {
+  selected: chalk.hex('#1a73e8'), // Google Blue - 选中项颜色
+  dim: chalk.hex('#9aa0a6'), // Light Grey - 次要信息颜色
+  bold: chalk.bold,
+};
+
+// 移动到指定列（1-based）
 function cursorToColumn(n: number): string {
   return `\x1b[${n}G`;
 }

@@ -2,52 +2,136 @@
 
 ## 1. 整体架构概览
 
-Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LLM 自主决策和执行工具。各组件职责明确，通过清晰的接口进行通信。
+Mini Agent 采用分层模块化架构，集成了工具调用能力、长期记忆系统和可观测性能力，支持 LLM 自主决策和执行工具。各组件职责明确，通过清晰的接口进行通信。
 
 ### 1.1 系统架构图
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│                          Mini Agent                                 │
-├────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌─────────────────────────────────────┐   │
-│  │  CLI Interface  │    │       ModelConfigManager            │   │
-│  │                 │    │                                     │   │
-│  │ • 用户交互      │    │ • 配置加载                          │   │
-│  │ • 输入处理      │    │ • 配置验证                          │   │
-│  │ • 响应显示      │    │ • 多源配置合并                      │   │
-│  └─────────┬───────┘    └──────────────┬──────────────────────┘   │
-│            │                           │                          │
-│            │                           │                          │
-│  ┌─────────▼───────────────────────────▼──────────────────────┐   │
-│  │                      Agent Core                            │   │
-│  │                                                            │   │
-│  │  ┌─────────────────────────────────────────────────────┐  │   │
-│  │  │         编排层 Orchestration Layer                   │  │   │
-│  │  │                                                      │  │   │
-│  │  │  ┌─────────────────────────────────────────────────┐│  │   │
-│  │  │  │           ExecutionEngine                       ││  │   │
-│  │  │  │                                                  ││  │   │
-│  │  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐││  │   │
-│  │  │  │  │OBSERVE  │→│  PLAN   │→│   ACT   │→│ EVALUATE│→│REFLECT │││  │   │
-│  │  │  │  │ 阶段    │ │  阶段   │ │  阶段   │ │  阶段   │ │ 阶段  │││  │   │
-│  │  │  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘││  │   │
-│  │  │  └─────────────────────────────────────────────────┘│  │   │
-│  │  └─────────────────────────────────────────────────────┘  │   │
-│  └───────────────────────┬────────────────────────────────────┘   │
-│                          │                                        │
-│            ┌─────────────┴─────────────┐                          │
-│            │                           │                          │
-│  ┌─────────▼──────────┐    ┌──────────▼───────────────────────┐  │
-│  │   Tool Registry   │    │      LLM Backend (External)      │  │
-│  │                    │    │                                  │  │
-│  │ • BaseTool管理    │    │ • OpenAI API / 兼容服务          │  │
-│  │ • 工具注册/查询   │    │ • HTTP REST API 调用             │  │
-│  │ • 启用/禁用控制   │    │ • Function Calling 支持          │  │
-│  │ • LangChain格式   │    │                                  │  │
-│  │   转换            │    │                                  │  │
-│  └────────────────────┘    └──────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Mini Agent                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐    ┌─────────────────────────────────────────────┐    │
+│  │  CLI Interface  │    │       ModelConfigManager                    │    │
+│  │                 │    │                                             │    │
+│  │ • 用户交互      │    │ • 配置加载                                  │    │
+│  │ • 输入处理      │    │ • 配置验证                                  │    │
+│  │ • 响应显示      │    │ • 多源配置合并                              │    │
+│  │ • 命令系统      │    │ • 工具配置                                  │    │
+│  └─────────┬───────┘    └──────────────────┬──────────────────────────┘    │
+│            │                               │                               │
+│            │                               │                               │
+│  ┌─────────▼───────────────────────────────▼──────────────────────────┐    │
+│  │                      Agent Core                                     │    │
+│  │                                                                     │    │
+│  │  ┌─────────────────────────────────────────────────────────────┐   │    │
+│  │  │         编排层 Orchestration Layer                           │   │    │
+│  │  │                                                              │   │    │
+│  │  │  ┌─────────────────────────────────────────────────────────┐│   │    │
+│  │  │  │           ExecutionEngine                               ││   │    │
+│  │  │  │                                                          ││   │    │
+│  │  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐       ││   │    │
+│  │  │  │  │OBSERVE  │→│  PLAN   │→│   ACT   │→│EVALUATE │       ││   │    │
+│  │  │  │  │ 阶段    │ │  阶段   │ │  阶段   │ │  阶段   │       ││   │    │
+│  │  │  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘       ││   │    │
+│  │  │  │       │                                    │            ││   │    │
+│  │  │  │       ▼                                    ▼            ││   │    │
+│  │  │  │  ┌──────────┐                         ┌──────────┐      ││   │    │
+│  │  │  │  │ REFLECT  │────────────────────────→│ 终止检查 │      ││   │    │
+│  │  │  │  │  阶段    │                         │          │      ││   │    │
+│  │  │  │  └──────────┘                         └──────────┘      ││   │    │
+│  │  │  └─────────────────────────────────────────────────────────┘│   │    │
+│  │  └─────────────────────────────────────────────────────────────┘   │    │
+│  └───────────────────────────┬─────────────────────────────────────────┘    │
+│                              │                                              │
+│        ┌─────────────────────┼─────────────────────┐                        │
+│        │                     │                     │                        │
+│  ┌─────▼──────┐    ┌────────▼─────────┐  ┌───────▼──────────────┐         │
+│  │   Tool     │    │      LLM         │  │   Memory System      │         │
+│  │  Registry  │    │    Backend       │  │                      │         │
+│  │            │    │                  │  │ • SessionStore       │         │
+│  │ • 工具管理 │    │ • ChatOpenAI     │  │ • CostTracker        │         │
+│  │ • 熔断保护 │    │ • Function Call  │  │ • TokenManager       │         │
+│  │ • 分类管理 │    │                  │  │ • LongTermMemory     │         │
+│  └────────────┘    └──────────────────┘  └──────────────────────┘         │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐      │
+│  │                    Observability System                           │      │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────────┐ │      │
+│  │  │TraceManager │ │ SpanManager │ │      PromptManager          │ │      │
+│  │  └─────────────┘ └─────────────┘ └─────────────────────────────┘ │      │
+│  └──────────────────────────────────────────────────────────────────┘      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 目录结构
+
+```
+src/
+├── agent/
+│   ├── core.ts                    # AgentCore - 门面类
+│   ├── controller.ts              # Controller - 控制层
+│   ├── planner.ts                 # Planner - 规划器
+│   ├── executor.ts                # Executor - 工具执行器（包装层）
+│   ├── execution/
+│   │   ├── engine.ts              # ExecutionEngine - 执行引擎
+│   │   ├── types.ts               # 执行引擎类型定义
+│   │   ├── reflector.ts           # Reflector - 反思器
+│   │   ├── evaluator.ts           # Evaluator - 评估器
+│   │   ├── state-digest.ts        # StateDigestGenerator - 状态摘要
+│   │   ├── delta-detector.ts      # DeltaDetector - 变更检测
+│   │   ├── parallel-executor.ts   # 并行执行器
+│   │   ├── plan-validator.ts      # 计划验证器
+│   │   ├── planner-adapter.ts     # 规划器适配器
+│   │   ├── state-manager.ts       # 状态管理器
+│   │   ├── agent-error.ts         # 错误处理器
+│   │   └── async-lock.ts          # 异步锁
+│   └── memory/
+│       ├── session-store.ts       # 会话存储
+│       ├── cost-tracker.ts        # 成本追踪
+│       ├── token-manager.ts       # Token管理
+│       ├── long-term-memory-manager.ts    # 长期记忆管理
+│       ├── long-term-memory-reader.ts     # 长期记忆读取
+│       ├── memory-extractor.ts    # 记忆提取器
+│       ├── memory-dispatcher.ts   # 记忆派发器
+│       ├── memory-job-queue.ts    # 记忆任务队列
+│       └── vector-database-client.ts      # 向量数据库客户端
+├── cli/
+│   ├── interface.ts               # CLIInterface - 主界面
+│   ├── display-manager.ts         # 显示管理器
+│   ├── command-selector.ts        # 命令选择器
+│   └── commands/                  # 命令系统
+│       ├── registry.ts            # 命令注册器
+│       ├── loader.ts              # 命令加载器
+│       ├── types.ts               # 命令类型
+│       └── cmd/                   # 具体命令实现
+├── tools/
+│   ├── base.ts                    # BaseTool - 工具基类
+│   ├── registry.ts                # 工具注册表
+│   ├── loader.ts                  # 工具加载器
+│   ├── circuit-breaker.ts         # 熔断器
+│   ├── category-registry.ts       # 分类注册表
+│   └── plugins/                   # 工具插件
+│       ├── tavily.ts              # Tavily搜索工具
+│       └── index.ts               # 插件导出
+├── observability/
+│   ├── langfuse-client.ts         # Langfuse客户端
+│   ├── trace-manager.ts           # Trace管理器
+│   ├── span-manager.ts            # Span管理器
+│   ├── prompt-manager.ts          # Prompt管理器
+│   ├── cost-calculator.ts         # 成本计算器
+│   └── types.ts                   # 可观测性类型
+├── worker/                        # Worker进程
+│   ├── worker-monitor.ts          # Worker监控器
+│   ├── memory-consumer.ts         # 内存消费者
+│   ├── worker-monitor-utils.ts    # 监控工具
+│   └── check-worker-status.ts     # 状态检查工具
+├── config/
+│   └── model-config.ts            # 模型配置管理
+└── types/
+    ├── agent.ts                   # Agent类型
+    ├── memory.ts                  # 记忆类型
+    └── model-config.ts            # 模型配置类型
 ```
 
 ## 2. 核心组件架构
@@ -56,87 +140,129 @@ Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LL
 
 **职责**: 处理AI对话逻辑，管理工具调用流程，桥接用户输入和LLM服务。AgentCore 作为门面类，集成编排层模块。
 
-```
-┌─────────────────────────────────────────────────┐
-│                  AgentCore                      │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • llm: ChatOpenAI                             │
-│  • config: ModelConfig                         │
-│  • toolRegistry: ToolRegistry                  │
-│  • controller: Controller                      │
-│                                                 │
-│  Methods:                                       │
-│  • processPrompt(prompt) → 委托给Controller   │
-│  • getToolRegistry() → 获取工具注册表         │
-└─────────────────┬───────────────────────────────┘
-                  │
-                  │ 委托
-                  ▼
-┌─────────────────────────────────────────────────┐
-│         Controller (控制层)                     │
-│  • 执行引擎协调                                 │
-│  • 可观测性集成                                 │
-│  • 记忆系统管理                                 │
-└─────────────────────────────────────────────────┘
+```typescript
+class AgentCore {
+  private llm: ChatOpenAI;
+  private config: ModelConfig;
+  private toolRegistry: ToolRegistry;
+  private controller: Controller;
+  private planner: Planner;
+  private executor: Executor;
+  private observabilityClient: ObservabilityClient;
+  private traceManager: TraceManager;
+  private spanManager: SpanManager;
+  private promptManager: PromptManager;
+
+  constructor(config: ModelConfig);
+  private initializeLLM(): ChatOpenAI;
+  private initializeToolRegistry(): ToolRegistry;
+  private initializeObservability(): ObservabilityClient;
+  private initializePlanner(): Planner;
+  private initializeExecutor(): Executor;
+  private initializeController(): Controller;
+  private registerPrompts(): Promise<void>;
+  async processPrompt(prompt: string): Promise<string>;
+  getToolRegistry(): ToolRegistry;
+}
 ```
 
-### 2.1.1 Controller - 控制层
+### 2.2 Controller - 控制层
 
 **职责**: 协调执行引擎，管理可观测性和记忆系统。
 
-| 属性           | 说明            |
-| -------------- | --------------- |
-| `llm`          | ChatOpenAI 实例 |
-| `toolRegistry` | 工具注册表      |
-| `config`       | 控制配置        |
-| `metrics`      | 执行指标        |
+```typescript
+class Controller {
+  private config: ControlConfig;
+  private metrics: ExecutionMetrics;
+  private state: ExecutionState;
+  private llm: ChatOpenAI;
+  private toolRegistry: ToolRegistry;
+  private sessionStore: SessionStore;
+  private costTracker: CostTracker;
+  private longTermMemoryReader: LongTermMemoryReader | null;
+  private memoryDispatcher: MemoryDispatcher | null;
+  private chainWithHistory: Runnable | null;
+  private traceManager: TraceManager;
+  private spanManager: SpanManager;
+  private modelName: string;
+  private promptManager: PromptManager;
 
-**方法**:
+  constructor(
+    llm: ChatOpenAI,
+    toolRegistry: ToolRegistry,
+    config?: Partial<ControlConfig>,
+    vectorDbConfig?: VectorDatabaseConfig,
+    traceManager?: TraceManager,
+    spanManager?: SpanManager,
+    modelName?: string
+  );
 
-- `execute(prompt)` - 编排入口，使用 ExecutionEngine
-- `getStatus()` - 获取执行状态
-- `getEngineConfig()` - 获取引擎配置
-- `updateEngineConfig()` - 更新引擎配置
+  async execute(prompt: string): Promise<string>;
+  getStatus(): ExecutionState;
+  getEngineConfig(): {
+    maxIterations: number;
+    maxExecutionTime: number;
+    toolTimeout: number;
+    tokenThreshold: number;
+  };
+  updateEngineConfig(
+    config: Partial<{
+      maxIterations: number;
+      maxExecutionTime: number;
+      toolTimeout: number;
+      tokenThreshold: number;
+    }>
+  ): void;
+}
+```
 
 **控制参数**:
 
-- `maxIterations`: 最大迭代次数 (默认 10)
-- `maxExecutionTime`: 最大执行时间 (默认 300000ms)
-- `toolTimeout`: 工具超时时间 (默认 30000ms)
-- `tokenThreshold`: Token 预警阈值 (默认 0.9)
+| 参数               | 默认值   | 说明           |
+| ------------------ | -------- | -------------- |
+| `maxIterations`    | 10       | 最大迭代次数   |
+| `maxExecutionTime` | 300000ms | 最大执行时间   |
+| `toolTimeout`      | 30000ms  | 工具超时时间   |
+| `tokenThreshold`   | 0.9      | Token 预警阈值 |
+| `maxTokens`        | 4000     | 最大Token数    |
 
-### 2.2 ExecutionEngine - 执行引擎
+### 2.3 ExecutionEngine - 执行引擎
 
 **职责**: 管理多轮循环执行，实现状态机驱动的 OBSERVE → PLAN → ACT → EVALUATE → REFLECT 流程。
 
-```
-┌─────────────────────────────────────────────────┐
-│              ExecutionEngine                    │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • config: ExecutionConfig                     │
-│  • phase: ExecutionPhase                       │
-│  • iteration: number                           │
-│  • workingMemory: ConversationHistory         │
-│  • toolMemory: ToolMemory                     │
-│  • summaryMemory: SummaryMemory               │
-│  • metrics: ExecutionMetricsCollector         │
-│  • deduplicationEngine: DeduplicationEngine   │
-│  • terminationChecker: TerminationChecker      │
-│  • reflector: Reflector                       │
-│  • evaluator: Evaluator                       │
-│  • stateDigestGenerator: StateDigestGenerator │
-│  • deltaDetector: DeltaDetector                │
-│                                                 │
-│  Methods:                                       │
-│  • run(userPrompt) → 执行主循环               │
-│  • getPhase() → 获取当前阶段                  │
-│  • getIteration() → 获取迭代次数              │
-│  • getWorkingMemory() → 获取工作记忆          │
-│  • getToolMemory() → 获取工具记忆             │
-│  • getSummaryMemory() → 获取摘要记忆         │
-└─────────────────────────────────────────────────┘
+```typescript
+class ExecutionEngine {
+  private config: ExecutionConfig;
+  private phase: ExecutionPhase;
+  private iteration: number;
+  private workingMemory: ConversationHistory;
+  private toolMemory: ToolMemory;
+  private summaryMemory: SummaryMemory;
+  private metrics: ExecutionMetricsCollector;
+  private deduplicationEngine: DeduplicationEngine;
+  private terminationChecker: TerminationChecker;
+  private reflector: Reflector;
+  private deps: ExecutionEngineDeps;
+  private currentPlan: Plan | null;
+  private lastWaveResults: WaveExecutionResult[];
+  private verbose: boolean;
+  private stateDigestGenerator: StateDigestGenerator;
+  private deltaDetector: DeltaDetector;
+  private errorHandler: AgentErrorHandler;
+  private previousSnapshot: StateSnapshot | null;
+  private stateDigestHistory: StateDigest[];
+  private stateDeltaHistory: StateDelta[];
+  private evaluator: Evaluator;
+  private lastEvaluationScore: EvaluationScore | null;
+
+  constructor(config: Partial<ExecutionConfig>, deps: ExecutionEngineDeps);
+  async run(
+    userPrompt: string,
+    conversationHistory?: Array<{ role: string; content: string }>
+  ): Promise<{ finalAnswer: string; metrics: ExecutionMetrics }>;
+  getPhase(): ExecutionPhase;
+  getIteration(): number;
+}
 ```
 
 **状态机模型**:
@@ -180,29 +306,44 @@ Mini Agent 采用分层模块化架构，集成了工具调用能力，支持 LL
               └──────────┘
 ```
 
-### 2.2.1 Reflector - 反思器
+**执行阶段说明**:
 
-**职责**: 评估工具执行结果，做出决策（continue/retry/new_plan/finalize_answer/fallback）。
+| 阶段     | 职责                       | 关键组件                            |
+| -------- | -------------------------- | ----------------------------------- |
+| OBSERVE  | 收集系统状态，生成状态摘要 | StateDigestGenerator, DeltaDetector |
+| PLAN     | 基于上下文生成执行计划     | Planner, PlanningContextFactory     |
+| ACT      | 执行工具调用，支持并行     | ParallelExecutor, Executor          |
+| EVALUATE | 评估执行结果质量           | Evaluator                           |
+| REFLECT  | 反思决策，确定下一步       | Reflector                           |
 
-```
-┌─────────────────────────────────────────────────┐
-│                Reflector                        │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • config: ReflectorConfig                     │
-│                                                 │
-│  Methods:                                       │
-│  • reflect(context) → 反思决策                 │
-│  • analyzeToolFailures() → 分析工具失败        │
-│  • evaluateInformationGrowth() → 评估信息增长  │
-│  • determineErrorAttribution() → 错误归因      │
-│  • makeDecision() → 做出决策                   │
-└─────────────────────────────────────────────────┘
-```
+### 2.4 Reflector - 反思器
 
-**决策逻辑**:
+**职责**: 评估工具执行结果，做出决策。
 
 ```typescript
+interface ReflectorConfig {
+  strategy: 'conservative' | 'balanced' | 'aggressive';
+  timeoutMs: number;
+  similarityThreshold: number;
+  maxRetryPerTool: number;
+  verbose?: boolean;
+}
+
+class Reflector {
+  private config: ReflectorConfig;
+
+  async reflect(context: ReflectionContext): Promise<ReflectionResult>;
+  private analyzeToolFailures(results: ToolExecutionResult[]): FailureAnalysis;
+  private evaluateInformationGrowth(
+    current: StateSnapshot,
+    previous: StateSnapshot | null
+  ): InformationGrowth;
+  private determineErrorAttribution(
+    failures: FailureAnalysis
+  ): ErrorAttribution;
+  private makeDecision(context: ReflectionContext): ReflectionDecision;
+}
+
 type ReflectionDecision =
   | 'continue' // 继续执行
   | 'retry' // 重试工具
@@ -211,22 +352,199 @@ type ReflectionDecision =
   | 'fallback'; // 降级处理
 ```
 
-### 2.2.2 ParallelExecutor - 并行执行器
+### 2.5 Evaluator - 评估器
+
+**职责**: 在ACT阶段后评估工具执行结果质量。
+
+```typescript
+interface EvaluationScore {
+  accuracy: number; // 准确性评估 (0-1)
+  completeness: number; // 完整性评估 (0-1)
+  efficiency: number; // 效率评估 (0-1)
+  confidence: number; // 置信度评估 (0-1)
+  overall: number; // 综合评分 (0-1)
+  details: {
+    successCount: number;
+    failureCount: number;
+    totalCount: number;
+    avgExecutionTime: number;
+    informationGrowth: number;
+    planCompletion: number;
+  };
+  suggestions: string[];
+  timestamp: number;
+  iteration: number;
+}
+
+interface EvaluatorConfig {
+  accuracyWeight: number;
+  completenessWeight: number;
+  efficiencyWeight: number;
+  confidenceWeight: number;
+  minSuccessThreshold: number;
+  maxExecutionTimeThreshold: number;
+  verbose?: boolean;
+}
+
+interface EvaluationContext {
+  currentPlan: Plan | null;
+  toolResults: Array<{
+    toolName: string;
+    status: string;
+    result?: string;
+    error?: string;
+    executionTime?: number;
+  }>;
+  toolMemory: ToolRecord[];
+  stateSnapshot: StateSnapshot;
+  iteration: number;
+  maxIterations: number;
+  metrics: ExecutionMetrics;
+}
+
+class Evaluator {
+  private config: EvaluatorConfig;
+
+  constructor(config?: Partial<EvaluatorConfig>);
+  evaluate(context: EvaluationContext): EvaluationScore;
+}
+```
+
+**评估逻辑**:
+
+- 评分 >= 0.8: 进入 REFLECT 阶段
+- 评分 < 0.4: 进入 PLAN 阶段重新规划
+- 其他: 进入 REFLECT 阶段
+
+### 2.6 StateDigestGenerator - 状态摘要生成器
+
+**职责**: 为 OBSERVE 阶段生成系统状态摘要。
+
+```typescript
+interface StateSnapshot {
+  iteration: number;
+  timestamp: number;
+  workingMemorySize: number;
+  workingMemoryTokens: number;
+  toolMemorySize: number;
+  recentToolRecords: ToolRecord[];
+  currentPlanProgress: PlanProgress;
+  failureStats: FailureStats;
+  performanceStats: PerformanceStats;
+}
+
+interface StateDigest {
+  summary: string;
+  keyMetrics: {
+    progressRate: number;
+    successRate: number;
+    informationGrowth: number;
+  };
+  highlights: string[];
+  warnings: string[];
+  timestamp: number;
+  iteration: number;
+}
+
+class StateDigestGenerator {
+  generateHeuristicDigest(
+    snapshot: StateSnapshot,
+    previousSnapshot?: StateSnapshot | null
+  ): StateDigest;
+  private calculateProgressRate(snapshot: StateSnapshot): number;
+  private calculateSuccessRate(snapshot: StateSnapshot): number;
+  private calculateInformationGrowth(
+    current: StateSnapshot,
+    previousSnapshot?: StateSnapshot | null
+  ): number;
+}
+```
+
+### 2.7 DeltaDetector - 变更检测器
+
+**职责**: 检测系统状态变化，决定是否跳过某些阶段。
+
+```typescript
+interface StateDelta {
+  progress_delta: number;
+  new_errors: number;
+  new_tools_used: boolean;
+  information_growth_rate: number;
+  should_skip_plan: boolean;
+  skip_reason?: string;
+  timestamp: number;
+}
+
+class DeltaDetector {
+  detect(current: StateSnapshot, previous: StateSnapshot | null): StateDelta;
+}
+```
+
+### 2.8 ParallelExecutor - 并行执行器
 
 **职责**: 并行执行工具调用，支持依赖图解析和波次执行。
 
-```
-┌─────────────────────────────────────────────────┐
-│            ParallelExecutor                     │
-├─────────────────────────────────────────────────┤
-│  Methods:                                       │
-│  • buildExecutionWaves() → 构建执行波次        │
-│  • executeAllWaves() → 执行所有波次            │
-│  • executeWave() → 执行单个波次                │
-│  • parseDependencyGraph() → 解析依赖图         │
-│  • topologicalSort() → 拓扑排序                │
-│  • groupIntoWaves() → 分组为波次               │
-└─────────────────────────────────────────────────┘
+```typescript
+interface ExecutionWave {
+  waveIndex: number;
+  steps: PlanStep[];
+}
+
+interface WaveExecutionResult {
+  waveIndex: number;
+  results: ToolExecutionResult[];
+  executionTime: number;
+}
+
+// 解析依赖图
+function parseDependencyGraph(plan: Plan): Map<string, Set<string>>;
+
+// 拓扑排序
+function topologicalSort(steps: PlanStep[]): PlanStep[];
+
+// 将步骤分组为执行波次
+function groupIntoWaves(steps: PlanStep[]): ExecutionWave[];
+
+// 构建执行波次（入口函数）
+function buildExecutionWaves(plan: Plan): ExecutionWave[];
+
+// 解析参数中的占位符
+function resolveDependencies(
+  stepArgs: Record<string, unknown>,
+  previousResults: Map<string, ToolExecutionResult>
+): Record<string, unknown>;
+
+// 执行单个波次
+function executeWave(
+  wave: ExecutionWave,
+  toolExecutor: (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => Promise<string>,
+  previousResults: Map<string, ToolExecutionResult>,
+  config: {
+    toolTimeout: number;
+    maxConcurrentTools: number;
+    waveTimeout: number;
+  }
+): Promise<WaveExecutionResult>;
+
+// 执行所有波次（主入口）
+function executeAllWaves(
+  waves: ExecutionWave[],
+  toolExecutor: (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => Promise<string>,
+  config: {
+    toolTimeout: number;
+    maxConcurrentTools: number;
+    waveTimeout: number;
+  }
+): Promise<{
+  results: ToolExecutionResult[];
+  duration: number;
+}>;
 ```
 
 **波次执行示例**:
@@ -242,64 +560,80 @@ type ReflectionDecision =
   波次1: [step2] → 等待波次0完成
 ```
 
-### 2.2.3 DeduplicationEngine - 去重引擎
-
-**职责**: 避免重复的工具调用，管理重试预算。
-
-```
-┌─────────────────────────────────────────────────┐
-│         DeduplicationEngine                     │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • toolMemory: ToolMemory                      │
-│  • config: DeduplicationConfig                 │
-│  • retryBudgets: Map<string, number>           │
-│                                                 │
-│  Methods:                                       │
-│  • checkDuplicate() → 检查重复调用             │
-│  • getDeduplicationState() → 获取去重状态       │
-│  • getWarningMessage() → 获取警告信息          │
-│  • onToolSuccess() → 工具成功回调              │
-│  • onToolFailure() → 工具失败回调              │
-└─────────────────────────────────────────────────┘
-```
-
-### 2.2.4 TerminationChecker - 终止检查器
+### 2.9 TerminationChecker - 终止检查器
 
 **职责**: 检查多种终止条件，支持语义终止。
 
-```
-┌─────────────────────────────────────────────────┐
-│          TerminationChecker                     │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • config: TerminationConfig                   │
-│  • startTime: number                           │
-│  • iteration: number                           │
-│  • failureCount: number                        │
-│  • consecutiveNoGrowthCount: number            │
-│                                                 │
-│  Methods:                                       │
-│  • checkAll() → 检查所有终止条件               │
-│  • checkPlannerSignal() → 规划器信号检查       │
-│  • checkNoInformationGrowth() → 信息增长检查   │
-│  • checkMaxIterations() → 最大迭代检查         │
-│  • checkTokenBudget() → Token预算检查          │
-│  • checkExecutionTimeout() → 执行超时检查      │
-│  • checkFailureBudget() → 失败预算检查         │
-└─────────────────────────────────────────────────┘
+```typescript
+interface TerminationConfig {
+  maxIterations: number;
+  maxExecutionTime: number;
+  maxTokens: number;
+  tokenBudgetThreshold: number;
+  similarityThreshold: number;
+  noGrowthIterationsRequired: number;
+  failureBudget: number;
+  warningThresholdRatio: number;
+  maxConsecutiveFailures: number;
+  consecutiveFailuresRequired: number;
+}
+
+interface TerminationCheckResult {
+  shouldTerminate: boolean;
+  reason?: TerminationReason;
+  message?: string;
+}
+
+type TerminationReason =
+  | 'planner_final_high_confidence'
+  | 'planner_final_medium_confidence'
+  | 'max_iterations_reached'
+  | 'no_information_growth'
+  | 'convergence_detected'
+  | 'token_limit_exceeded'
+  | 'execution_timeout'
+  | 'retry_budget_exhausted'
+  | 'all_tools_failed'
+  | 'system_error';
+
+class TerminationChecker {
+  constructor(config?: Partial<TerminationConfig>);
+
+  updateIteration(): void;
+  recordFailure(): void;
+  recordSuccess(): void;
+  recordInformationGrowth(growth: number): void;
+
+  check(params: {
+    plannerDecision?: string;
+    plannerConfidence?: number;
+    tokenCount?: number;
+  }): TerminationCheckResult;
+
+  getStatus(): {
+    iteration: number;
+    elapsedTime: number;
+    failureCount: number;
+    consecutiveNoGrowthCount: number;
+    lastInformationGrowth: number;
+    isNearLimit: boolean;
+  };
+
+  getTerminationHistory(): TerminationCheckResult[];
+  reset(): void;
+}
 ```
 
 **终止条件优先级**:
 
-| 终止条件     | 优先级 | 说明                       |
-| ------------ | ------ | -------------------------- |
-| 规划器信号   | 1      | 规划器返回 `type: "final"` |
-| 无信息增长   | 2      | 连续 N 轮无新信息          |
-| 最大迭代     | 3      | 达到最大迭代次数限制       |
-| Token 超预算 | 4      | Token 使用超过阈值         |
-| 执行超时     | 5      | 总执行时间超过限制         |
-| 失败预算     | 6      | 工具失败次数超过预算       |
+| 优先级 | 终止条件     | 说明                       |
+| ------ | ------------ | -------------------------- |
+| 1      | 规划器信号   | 规划器返回 `type: "final"` |
+| 2      | 无信息增长   | 连续 N 轮无新信息          |
+| 3      | 最大迭代     | 达到最大迭代次数限制       |
+| 4      | Token 超预算 | Token 使用超过阈值         |
+| 5      | 执行超时     | 总执行时间超过限制         |
+| 6      | 失败预算     | 工具失败次数超过预算       |
 
 ## 3. 记忆系统架构
 
@@ -340,264 +674,428 @@ type ReflectionDecision =
 │  │  │  - 关键信息保留                              │   │   │
 │  │  └─────────────────────────────────────────────┘   │   │
 │  └─────────────────────────────────────────────────────┘   │
+│                           │                                 │
+│                           ▼                                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              长期记忆 (Long-term Memory)             │   │
+│  │  ┌─────────────────────────────────────────────┐   │   │
+│  │  │  VectorDatabaseClient                       │   │   │
+│  │  │  - Supabase + pgvector                       │   │   │
+│  │  │  - 向量相似度搜索                            │   │   │
+│  │  │  - 持久化存储                                │   │   │
+│  │  └─────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 ConversationHistory - 对话历史
+### 3.2 记忆组件
 
-**职责**: 管理工作记忆，存储最近的对话消息。
+#### SessionStore
 
-```
-┌─────────────────────────────────────────────────┐
-│           ConversationHistory                   │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • messages: Message[]                         │
-│  • maxSize: number                             │
-│  • maxTokens: number                           │
-│                                                 │
-│  Methods:                                       │
-│  • addMessage() → 添加消息                     │
-│  • addUserMessage() → 添加用户消息             │
-│  • addAssistantMessage() → 添加助手消息        │
-│  • addToolMessage() → 添加工具消息             │
-│  • getMessages() → 获取所有消息                │
-│  • getRecentMessages() → 获取最近消息          │
-│  • estimateTokens() → 估算Token数量           │
-│  • clear() → 清空历史                          │
-└─────────────────────────────────────────────────┘
+```typescript
+class SessionStore {
+  private sessions: Map<string, InMemoryChatMessageHistory>;
+
+  getOrCreate(sessionId: string): InMemoryChatMessageHistory;
+  async clear(sessionId: string): Promise<void>;
+  delete(sessionId: string): void;
+  getAllSessionIds(): string[];
+}
 ```
 
-### 3.3 ToolMemory - 工具记忆
+#### CostTracker
 
-**职责**: 存储工具调用记录，支持去重和统计。
+```typescript
+class CostTracker {
+  private records: CostRecord[];
 
-```
-┌─────────────────────────────────────────────────┐
-│              ToolMemory                         │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • records: ToolRecord[]                       │
-│  • maxSize: number                             │
-│                                                 │
-│  Methods:                                       │
-│  • addRecord() → 添加记录                      │
-│  • getRecords() → 获取所有记录                 │
-│  • getRecentRecords() → 获取最近记录           │
-│  • findDuplicate() → 查找重复调用              │
-│  • getToolStats() → 获取工具统计               │
-│  • queryToolMemory() → 查询工具记忆            │
-│  • exportToJSON() → 导出为JSON                 │
-└─────────────────────────────────────────────────┘
+  record(usage: UsageMetadata, modelName: string): void;
+  getSummary(): CostSummary;
+  getRecentRecords(count: number): CostRecord[];
+  reset(): void;
+}
 ```
 
-### 3.4 SummaryMemory - 摘要记忆
+#### TokenManager
 
-**职责**: 存储历史摘要，用于 Token 压缩。
-
-```
-┌─────────────────────────────────────────────────┐
-│            SummaryMemory                        │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • summaries: Summary[]                        │
-│  • maxSize: number                             │
-│                                                 │
-│  Methods:                                       │
-│  • addSummary() → 添加摘要                     │
-│  • getSummaries() → 获取所有摘要               │
-│  • getLatestSummary() → 获取最新摘要           │
-│  • exportToJSON() → 导出为JSON                 │
-└─────────────────────────────────────────────────┘
+```typescript
+function estimateTokenCount(text: string): number;
+function createTrimmer(options: TrimmerOptions): Runnable;
+function getTokenStatus(messages: BaseMessage[], limit: number): TokenStatus;
+async function runTokenPreflight(
+  messages: BaseMessage[],
+  limit: number
+): Promise<BaseMessage[]>;
 ```
 
-## 4. Tool System - 工具系统
+#### LongTermMemoryManager
 
-**职责**: 提供插件化的工具管理架构，支持工具注册、加载和执行。
+```typescript
+class LongTermMemoryManager {
+  private dbClient: VectorDatabaseClient;
+  private extractor: MemoryExtractor;
+  private config: LongTermMemoryConfig;
+  private queue: MemoryJobQueue;
 
-### 4.1 BaseTool - 工具基类
-
-```
-┌─────────────────────────────────────────────────┐
-│              BaseTool (抽象类)                  │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • name: string - 工具名称                      │
-│  • description: string - 工具描述               │
-│  • paramsSchema: ZodSchema - 参数验证           │
-│  • _enabled: boolean - 启用状态                 │
-│                                                 │
-│  Methods:                                       │
-│  • execute(params) → 工具执行逻辑(抽象)         │
-│  • run(params) → 验证+执行                      │
-│  • toLangChainTool() → 转换为LangChain格式      │
-│  • zodTypeToLangChainProperty() → 类型转换      │
-└─────────────────────────────────────────────────┘
+  async initialize(): Promise<boolean>;
+  create(input: CreateMemoryInput): Promise<Memory | null>;
+  search(query: string, topK?: number): Promise<MemorySearchResult[]>;
+  update(id: string, content: string): Promise<boolean>;
+  delete(id: string): Promise<boolean>;
+  shutdown(): void;
+}
 ```
 
-**特性**:
+## 4. 可观测性系统
 
-- 基于 Zod 的参数验证
-- 自动生成 LangChain 工具定义
-- 支持启用/禁用状态控制
-- 类型安全的参数处理
-
-### 4.2 ToolRegistry - 工具注册中心
+### 4.1 架构设计
 
 ```
-┌─────────────────────────────────────────────────┐
-│              ToolRegistry                       │
-├─────────────────────────────────────────────────┤
-│  Properties:                                    │
-│  • tools: Map<string, BaseTool>                │
-│                                                 │
-│  Methods:                                       │
-│  • registerTool(tool) → 注册单个工具            │
-│  • registerTools(tools) → 批量注册              │
-│  • getTools() → 获取所有工具                    │
-│  • getEnabledTools() → 获取启用的工具           │
-│  • enableTool(name) / disableTool(name)         │
-│  • executeTool(name, params) → 执行工具         │
-│  • getLangChainTools() → 获取LangChain格式      │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Observability System                     │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              ObservabilityClient                     │   │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │   │
+│  │  │TraceManager │ │ SpanManager │ │PromptManager│   │   │
+│  │  └─────────────┘ └─────────────┘ └─────────────┘   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                           │                                 │
+│                           ▼                                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                    Langfuse                          │   │
+│  │              (Cloud/Self-hosted)                     │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 4.3 ToolLoader - 工具加载器
+### 4.2 Trace/Span 层级结构
 
 ```
-┌─────────────────────────────────────────────────┐
-│              ToolLoader                         │
-├─────────────────────────────────────────────────┤
-│  Methods:                                       │
-│  • loadFromConfig(registry, configs, disabled)  │
-│    → 从配置加载工具                             │
-│  • loadAll(registry) → 加载所有工具             │
-│  • getToolNames() → 获取所有工具名称            │
-│  • hasTool(name) → 检查工具是否存在             │
-└─────────────────────────────────────────────────┘
+Trace (conversation)
+├── Generation (llm) - planner-decision
+│   ├── input: { prompt, toolsCount }
+│   ├── output: { toolCalls, needsTool }
+│   ├── metadata: { model, usage, cost }
+│   └── usageDetails: { input: 100, output: 50, total: 150 }
+│
+├── Span (tool) - tool-execution
+│   ├── input: { toolName, arguments }
+│   ├── output: { result }
+│   └── metadata: { success, executionTime }
+│
+└── Generation (llm) - llm-response
+    ├── input: { input, hasLongTermMemory }
+    ├── output: { response }
+    ├── metadata: { model, usage, cost }
+    └── usageDetails: { input: 200, output: 100, total: 300 }
 ```
 
-### 4.4 工具注册机制
+### 4.3 核心组件
 
-```
-┌─────────────────────────────────────────────────┐
-│          @registerTool() 装饰器                 │
-├─────────────────────────────────────────────────┤
-│  使用方式:                                      │
-│  @registerTool()                                │
-│  class MyTool extends BaseTool {                │
-│    readonly name = 'my-tool';                   │
-│    readonly description = '我的工具';           │
-│    readonly paramsSchema = z.object({...});     │
-│    async execute(params) { ... }                │
-│  }                                              │
-│                                                 │
-│  自动注册到: baseToolClasses[]                  │
-│  自动加载: ToolLoader.loadFromConfig()          │
-└─────────────────────────────────────────────────┘
+#### ObservabilityClient
+
+```typescript
+class ObservabilityClient {
+  private client: LangfusePromptClient | null;
+  private rawClient: LangfuseClient | null;
+  private config: ObservabilityConfig;
+
+  constructor(config?: ObservabilityConfig);
+  isEnabled(): boolean;
+  getClient(): LangfusePromptClient | null;
+  getRawClient(): LangfuseClient | null;
+  async flush(): Promise<void>;
+}
 ```
 
-## 5. 数据流架构
+#### TraceManager
 
-### 5.1 多轮循环执行数据流
-
-```
-用户输入
-    │
-    ▼
-Controller.execute(prompt)
-    │
-    ▼
-ExecutionEngine.run(prompt)
-    │
-    ├─→ OBSERVE 阶段
-    │   • 收集当前状态
-    │   • 更新工作记忆
-    │   • 构建 PlanningContext
-    │   • 检查终止条件
-    │
-    ├─→ PLAN 阶段
-    │   • 调用 LLM 生成计划
-    │   • 解析计划响应
-    │   • 验证计划合法性
-    │   • 返回计划或最终答案
-    │
-    ├─→ ACT 阶段
-    │   • 检查工具去重
-    │   • 构建依赖图
-    │   • 生成执行波次
-    │   • 并行执行工具
-    │   • 收集工具结果
-    │   • 更新工具记忆
-    │
-    └─→ REFLECT 阶段
-        • 评估工具执行成功率
-        • 分析信息增长
-        • 检测重复调用模式
-        • 做出决策 (continue/retry/finalize/fallback)
-        • 记录反思指标
-    │
-    ▼
-是否继续循环?
-    │
-    ├── 否 → 返回最终答案
-    │
-    └── 是 → 返回 OBSERVE 阶段
+```typescript
+class TraceManager {
+  createTrace(context: TraceContext): string | null;
+  endTrace(output?: string, metadata?: Record<string, unknown>): void;
+  getCurrentTraceId(): string | null;
+  generateTraceId(): string;
+}
 ```
 
-### 5.2 并行执行数据流
+#### SpanManager
 
-```
-计划步骤
-    │
-    ▼
-parseDependencyGraph(plan)
-    │
-    ▼
-topologicalSort(steps)
-    │
-    ▼
-groupIntoWaves(sortedSteps)
-    │
-    ▼
-executeAllWaves(waves, toolExecutor)
-    │
-    ├─→ 波次0: [step1, step3] → 并行执行
-    │   • resolveDependencies(step1.args)
-    │   • resolveDependencies(step3.args)
-    │   • Promise.all([execute(step1), execute(step3)])
-    │
-    ├─→ 波次1: [step2] → 等待波次0完成
-    │   • resolveDependencies(step2.args, previousResults)
-    │   • execute(step2)
-    │
-    └─→ 收集所有结果
-        • 按步骤顺序排序
-        • 返回 WaveExecutionResult[]
+```typescript
+class SpanManager {
+  createSpan(options: CreateSpanOptions): string | null;
+  createLLMSpan(
+    name: string,
+    input: unknown,
+    metadata?: Record<string, unknown>
+  ): string | null;
+  createToolSpan(name: string, toolName: string, input: unknown): string | null;
+  endSpan(spanId: string, options?: EndSpanOptions): void;
+}
 ```
 
-## 6. 架构特点
+#### PromptManager
 
-### 6.1 技术选型优势
+```typescript
+class PromptManager {
+  async registerPrompt(
+    name: string,
+    template: string,
+    labels?: string[]
+  ): Promise<void>;
+  async getPrompt(
+    name: string,
+    version?: string
+  ): Promise<PromptTemplate | null>;
+  compileTemplate(template: string, variables: Record<string, string>): string;
+}
+```
 
-- **LangChain**: 统一的 LLM 接口，支持 Function Calling
-- **Zod**: 强类型参数验证，自动生成工具定义
-- **TypeScript**: 类型安全，提高代码质量和开发效率
-- **Commander**: 成熟的 CLI 框架，功能丰富
-- **装饰器模式**: 自动化工具注册，简化开发
-- **插件化设计**: 工具独立开发、配置和加载
+## 5. 工具系统架构
 
-### 6.2 设计模式
+### 5.1 核心组件
 
-- **状态机模式**: 执行引擎使用状态机管理执行流程
-- **策略模式**: 反思器支持不同的决策策略（conservative/balanced/aggressive）
-- **工厂模式**: PlanningContextFactory 构建规划上下文
-- **观察者模式**: 指标收集器支持回调通知
-- **适配器模式**: PlannerAdapter 提供新旧格式兼容
+#### BaseTool
 
-### 6.3 扩展性
+```typescript
+abstract class BaseTool {
+  abstract readonly name: string;
+  abstract readonly description: string;
+  abstract readonly paramsSchema: z.ZodType<Record<string, unknown>>;
 
-- **自定义反思策略**: 可实现 ReflectorStrategy 接口
-- **自定义终止条件**: 可实现 TerminationCondition 接口
-- **自定义记忆策略**: 可实现 MemoryStrategy 接口
-- **插件化工具**: 通过装饰器自动注册新工具
+  protected _enabled: boolean;
+  readonly category?: ToolCategory;
+  readonly timeout?: number;
+  readonly retryConfig?: RetryConfig;
+  readonly jsonSchema?: JSONSchema;
+
+  get enabled(): boolean;
+  set enabled(value: boolean);
+
+  abstract execute(params: Record<string, unknown>): Promise<string>;
+  run(params: Record<string, unknown>): Promise<string>;
+  getLangChainTool(): LangChainToolDefinition;
+}
+```
+
+#### ToolRegistry
+
+```typescript
+class ToolRegistry {
+  private tools: Map<string, BaseTool>;
+  private categoryRegistry: ToolCategoryRegistry;
+
+  register(tool: BaseTool): void;
+  getTool(name: string): BaseTool | undefined;
+  getAllTools(): BaseTool[];
+  getEnabledTools(): BaseTool[];
+  getLangChainTools(): LangChainToolDefinition[];
+  executeTool(name: string, params: Record<string, unknown>): Promise<string>;
+}
+```
+
+#### CircuitBreaker
+
+```typescript
+class CircuitBreaker {
+  private state: CircuitState;
+  private failureCount: number;
+  private lastFailureTime: number;
+  private halfOpenAttempts: number;
+
+  async execute<T>(fn: () => Promise<T>): Promise<T>;
+  getState(): CircuitState;
+  getStats(): CircuitStats;
+  reset(): void;
+}
+
+type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+```
+
+## 6. Worker 系统
+
+### 6.1 架构设计
+
+```
+┌───────────────────────────┐          ┌───────────────────────────┐
+│      父进程 (CLI/Main)     │          │      子进程 (Worker)      │
+│ ┌───────────────────────┐ │  spawn   │ ┌───────────────────────┐ │
+│ │    WorkerMonitor      ├─┼──────────>│ │    MemoryConsumer     │ │
+│ └──────────┬────────────┘ │          │ └──────────┬────────────┘ │
+│            │              │          │            │              │
+│ ┌──────────▼────────────┐ │          │ ┌──────────▼────────────┐ │
+│ │      Status CLI       │ │          │ │ LongTermMemoryManager │ │
+│ └──────────┬────────────┘ │          │ └───────────────────────┘ │
+└────────────┼──────────────┘          └────────────┬──────────────┘
+             │                                      │
+             │           通信与持久化层             │
+             │   ┌──────────────────────────────┐   │
+             └───>      状态文件 (.json)        <───┘
+                 │   (心跳、PID、队列积压)      │
+                 └──────────────────────────────┘
+                 ┌──────────────────────────────┐
+                 │      日志文件 (.log)         │
+                 └──────────────────────────────┘
+```
+
+### 6.2 WorkerMonitor
+
+```typescript
+interface WorkerStatus {
+  isAlive: boolean;
+  pid: number | null;
+  uptime: number;
+  lastHeartbeat: Date | null;
+  restartCount: number;
+  lastError: string | null;
+  pendingJobs: number;
+}
+
+interface MonitorConfig {
+  heartbeatTimeout: number;
+  maxRestarts: number;
+  restartDelay: number;
+  healthCheckInterval: number;
+  logPath?: string;
+}
+
+class WorkerMonitor {
+  async start(): Promise<void>;
+  stop(): void;
+  getStatus(): WorkerStatus;
+  private restartWorker(): void;
+  private checkHealth(): void;
+}
+```
+
+## 7. CLI 系统
+
+### 7.1 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        CLIInterface                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │   Command    │  │   Command    │  │   CommandSelector │  │
+│  │   Registry   │  │   Loader     │  │                  │  │
+│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
+└─────────┼─────────────────┼───────────────────┼────────────┘
+          │                 │                   │
+          ▼                 ▼                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      Command Modules                         │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
+│  │  help.ts │ │ clear.ts │ │  exit.ts │ │memory.ts │  ...  │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 命令类型
+
+```typescript
+interface Command {
+  name: string;
+  description: string;
+  aliases?: string[];
+  action: () => void | Promise<void>;
+}
+
+interface CommandContext {
+  cli: CLIInterface;
+  showPrompt: () => void;
+  clearScreen: () => void;
+  quit: () => void;
+}
+```
+
+## 8. 配置系统
+
+### 8.1 模型配置
+
+```typescript
+interface ModelConfig {
+  baseUrl: string;
+  modelName: string;
+  apiKey?: string;
+  temperature?: number;
+  maxTokens?: number;
+  tools?: ToolsConfig;
+  longTermMemory?: LongTermMemoryOptions;
+}
+
+interface ToolsConfig {
+  disabled?: string[];
+  configs?: Record<string, Record<string, unknown>>;
+}
+
+interface LongTermMemoryOptions {
+  enabled: boolean;
+  supabaseUrl?: string;
+  supabaseApiKey?: string;
+  embeddingApiKey?: string;
+}
+```
+
+### 8.2 环境变量
+
+| 环境变量              | 说明              |
+| --------------------- | ----------------- |
+| `MODEL_BASE_URL`      | 模型API基础URL    |
+| `MODEL_NAME`          | 模型名称          |
+| `MODEL_API_KEY`       | API密钥           |
+| `MODEL_TEMPERATURE`   | 温度参数          |
+| `MODEL_MAX_TOKENS`    | 最大Token数       |
+| `DISABLED_TOOLS`      | 禁用的工具列表    |
+| `TAVILY_API_KEY`      | Tavily API密钥    |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse公钥      |
+| `LANGFUSE_SECRET_KEY` | Langfuse密钥      |
+| `LANGFUSE_HOST`       | Langfuse主机      |
+| `SUPABASE_URL`        | Supabase URL      |
+| `SUPABASE_API_KEY`    | Supabase API密钥  |
+| `EMBEDDING_API_KEY`   | Embedding API密钥 |
+
+## 9. 扩展点
+
+### 9.1 自定义工具
+
+```typescript
+@registerTool()
+class MyTool extends BaseTool {
+  readonly name = 'my-tool';
+  readonly description = '我的工具';
+  readonly paramsSchema = z.object({
+    query: z.string().describe('查询内容'),
+  });
+  readonly category = ToolCategories.EXTERNAL_API;
+
+  async execute(params: { query: string }): Promise<string> {
+    // 工具逻辑
+    return 'result';
+  }
+}
+```
+
+### 9.2 自定义命令
+
+```typescript
+export const myCommand: CommandDefinition = {
+  name: 'my-command',
+  description: '我的命令',
+  aliases: ['mc'],
+  execute: async (context: CommandContext) => {
+    // 命令逻辑
+  },
+};
+```
+
+### 9.3 自定义反射策略
+
+```typescript
+class CustomReflectorStrategy implements ReflectorStrategy {
+  evaluate(context: ReflectionContext): ReflectionDecision {
+    // 自定义评估逻辑
+    return 'continue';
+  }
+}
+```
