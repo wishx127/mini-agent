@@ -170,8 +170,8 @@ export interface ControlConfig {
  */
 export const DEFAULT_CONTROL_CONFIG: ControlConfig = {
   maxTokens: 6000,
-  maxIterations: 10,
-  timeout: 180000,
+  maxIterations: 100,
+  timeout: 600000,
   tokenThreshold: 0.9,
   toolTimeout: 30000,
   maxResultLength: 4000,

@@ -329,6 +329,11 @@ export class Planner {
     // 去除首尾空白
     filtered = filtered.trim();
 
+    // 安全检查：如果过滤后内容为空，保留原始内容
+    if (!filtered || filtered.length === 0) {
+      return content.trim();
+    }
+
     return filtered;
   }
 

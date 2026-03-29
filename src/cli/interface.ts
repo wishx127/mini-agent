@@ -466,9 +466,13 @@ export class CLIInterface {
       return;
     }
 
-    // 普通字符输入
-    if (key.length === 1 && key >= ' ') {
-      this.normalInputBuffer += key;
+    // 处理多字符输入（粘贴或快速输入）
+    // 过滤掉控制字符，只保留可打印字符
+    const printableChars = key
+      .split('')
+      .filter((char) => char.length === 1 && char >= ' ');
+    if (printableChars.length > 0) {
+      this.normalInputBuffer += printableChars.join('');
       this.refreshPromptLine();
       return;
     }

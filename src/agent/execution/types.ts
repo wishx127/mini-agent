@@ -62,8 +62,8 @@ export type ExecutionConfig = UnifiedExecutionConfig;
  * 统一后的默认配置
  */
 export const DEFAULT_UNIFIED_CONFIG: UnifiedExecutionConfig = {
-  maxIterations: 10,
-  maxExecutionTime: 300000,
+  maxIterations: 100,
+  maxExecutionTime: 600000,
   maxWorkingMemorySize: 10,
   maxToolMemorySize: 100,
   summaryTriggerRound: 5,
@@ -1133,9 +1133,9 @@ export interface TerminationConfig {
 }
 
 export const DEFAULT_TERMINATION_CONFIG: TerminationConfig = {
-  maxIterations: 10,
-  maxExecutionTime: 300000,
-  maxTokens: 128000,
+  maxIterations: 100,
+  maxExecutionTime: 600000,
+  maxTokens: 1280000,
   tokenBudgetThreshold: 0.9,
   similarityThreshold: 0.95,
   noGrowthIterationsRequired: 2,
