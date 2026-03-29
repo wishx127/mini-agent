@@ -779,11 +779,22 @@ export class Controller {
   private getAvailableToolsInfo(
     tools: { name: string; description: string; enabled: boolean }[]
   ): ToolInfo[] {
-    return tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      enabled: tool.enabled,
-    }));
+    return tools.map((tool) => {
+      // 如果是 BaseTool，提取参数定义
+      const baseTool = tool as import('../tools/base.js').BaseTool;
+      let parameters: Record<string, unknown> | undefined;
+      if (typeof baseTool.toLangChainTool === 'function') {
+        const langChainTool = baseTool.toLangChainTool();
+        parameters = langChainTool.function.parameters;
+      }
+
+      return {
+        name: tool.name,
+        description: tool.description,
+        enabled: tool.enabled,
+        parameters,
+      };
+    });
   }
 
   /**

@@ -385,6 +385,18 @@ export class ExecutionEngine {
     const response = await this.deps.llm.invoke(prompt);
     const content = this.extractContent(response);
     const plan = this.parsePlanResponse(content);
+
+    // 如果 isFinalAnswer=true 但 reasoning 为空，使用 buildFinalAnswerPrompt 获取答案
+    if (
+      plan.isFinalAnswer &&
+      (!plan.reasoning || plan.reasoning.trim() === '')
+    ) {
+      const finalAnswerPrompt = await this.buildFinalAnswerPrompt(context);
+      const finalResponse = await this.deps.llm.invoke(finalAnswerPrompt);
+      const finalContent = this.extractContent(finalResponse);
+      plan.reasoning = finalContent || '无法生成答案';
+    }
+
     this.currentPlan = plan;
     return plan;
   }
@@ -478,40 +490,31 @@ export class ExecutionEngine {
       ''
     );
 
-    // 新增：移除以"根据"开头的分析段落（如"根据用户偏好数据和当前对话上下文..."）
-    filtered = filtered.replace(/^根据[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
-
-    // 新增：移除包含"下一步应"的推理段落
+    // 移除包含"下一步应"的推理段落（内部规划用语）
     filtered = filtered.replace(/.*下一步应[\s\S]*?(?=\n\n|\n[^下]|$)/gi, '');
 
-    // 新增：移除包含"用户正在期待"的推理段落
+    // 移除包含"用户正在期待"的推理段落（内部规划用语）
     filtered = filtered.replace(
       /.*用户正在期待[\s\S]*?(?=\n\n|\n[^用]|$)/gi,
       ''
     );
 
-    // 新增：移除包含"虽然此前"的推理段落
+    // 移除包含"虽然此前"的推理段落（内部规划用语）
     filtered = filtered.replace(/.*虽然此前[\s\S]*?(?=\n\n|\n[^虽]|$)/gi, '');
 
-    // 新增：移除包含"满足其"的推理段落
+    // 移除包含"满足其"的推理段落（内部规划用语）
     filtered = filtered.replace(/.*满足其[\s\S]*?(?=\n\n|\n[^满]|$)/gi, '');
 
-    // 新增：移除包含"提升对话体验"的推理段落
+    // 移除包含"提升对话体验"的推理段落（内部规划用语）
     filtered = filtered.replace(
       /.*提升对话体验[\s\S]*?(?=\n\n|\n[^提]|$)/gi,
       ''
     );
 
-    // 新增：移除以"分析用户"开头的段落
+    // 移除以"分析用户"开头的段落（内部规划用语）
     filtered = filtered.replace(/^分析用户[\s\S]*?(?=\n\n|\n[^分]|$)/gi, '');
 
-    // 新增：移除以"基于"开头的分析段落
-    filtered = filtered.replace(/^基于[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
-
-    // 新增：移除以"考虑到"开头的分析段落
-    filtered = filtered.replace(/^考虑到[\s\S]*?(?=。|\.)(?:。|\.)/gm, '');
-
-    // 新增：移除以"为了"开头的目的说明段落（如果后面跟着推理）
+    // 移除以"为了"开头的目的说明段落（如果后面跟着推理）
     filtered = filtered.replace(
       /^为了[\s\S]*?(?=，|,)(?:，|,)[\s\S]*?(?=\n\n|\n[^为]|$)/gi,
       ''
@@ -521,28 +524,28 @@ export class ExecutionEngine {
     filtered = filtered.replace(/"reasoning"\s*:\s*"[^"]*"/gi, '');
     filtered = filtered.replace(/reasoning\s*:\s*"[^"]*"/gi, '');
 
-    // 移除包含"核心诉求"的分析段落
+    // 移除包含"核心诉求"的分析段落（内部规划用语）
     filtered = filtered.replace(/.*核心诉求[\s\S]*?(?=\n\n|\n[^核]|$)/gi, '');
 
-    // 移除包含"置信度"的分析段落
+    // 移除包含"置信度"的分析段落（内部规划用语）
     filtered = filtered.replace(/.*置信度[\s\S]*?(?=\n\n|\n[^置]|$)/gi, '');
 
-    // 移除包含"单次澄清动作"的分析段落
+    // 移除包含"单次澄清动作"的分析段落（内部规划用语）
     filtered = filtered.replace(
       /.*单次澄清动作[\s\S]*?(?=\n\n|\n[^单]|$)/gi,
       ''
     );
 
-    // 移除以"此为"开头的判断说明段落
+    // 移除以"此为"开头的判断说明段落（内部规划用语）
     filtered = filtered.replace(/^此为[\s\S]*?(?=\n\n|$)/gi, '');
 
-    // 移除包含"无需复杂流程"的分析段落
+    // 移除包含"无需复杂流程"的分析段落（内部规划用语）
     filtered = filtered.replace(
       /.*无需复杂流程[\s\S]*?(?=\n\n|\n[^无]|$)/gi,
       ''
     );
 
-    // 移除包含"置信度高"的分析段落
+    // 移除包含"置信度高"的分析段落（内部规划用语）
     filtered = filtered.replace(/.*置信度高[\s\S]*?(?=\n\n|\n[^置]|$)/gi, '');
 
     // 移除看起来像内部决策输出的内容（如"用户的核心诉求是..."、"此为单次澄清动作"等）
@@ -560,6 +563,11 @@ export class ExecutionEngine {
 
     // 去除首尾空白
     filtered = filtered.trim();
+
+    // 安全检查：如果过滤后内容为空，保留原始内容
+    if (!filtered || filtered.length === 0) {
+      return content.trim();
+    }
 
     return filtered;
   }
