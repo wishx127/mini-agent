@@ -12,4 +12,14 @@
 export { TavilySearchTool } from './tavily.js';
 
 // 导出文件操作工具
-export { ReadTool, GlobTool, GrepTool } from './file-operations/index.js';
+export {
+  ReadTool,
+  GlobTool,
+  GrepTool,
+  LSTool,
+  CreateTool,
+  WriteTool,
+  DeleteTool,
+  MoveTool,
+  MkdirTool,
+} from './file-operations/index.js';

@@ -133,6 +133,41 @@ export class DisplayManager {
   }
 
   /**
+   * 获取当前 spinner 的文本
+   */
+  getLoadingText(): string | null {
+    return this.spinner?.text ?? null;
+  }
+
+  /**
+   * 在 spinner 下方输出工具调用信息
+   * 清除当前 spinner 行，输出工具调用，然后重新显示 spinner
+   */
+  logToolCall(icon: string, name: string, detail: string): void {
+    if (this.spinner) {
+      // 清除当前 spinner 行
+      process.stdout.write('\r\x1b[K');
+      // 输出工具调用信息
+      console.log(
+        `  ${Colors.dim(icon + ' ' + name + ':')} ${Colors.dim(detail)}`
+      );
+      // 重新启动 spinner 保持动画
+      const currentText = this.spinner.text;
+      this.spinner = ora({
+        text: currentText,
+        spinner: this.spinner.spinner,
+        isEnabled: true,
+        discardStdin: false,
+      }).start();
+    } else {
+      // 如果没有 spinner，直接输出
+      console.log(
+        `  ${Colors.dim(icon + ' ' + name + ':')} ${Colors.dim(detail)}`
+      );
+    }
+  }
+
+  /**
    * 显示 token 使用统计
    */
   showTokenStats(

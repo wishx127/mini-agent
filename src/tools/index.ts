@@ -12,6 +12,9 @@ export {
   JSONSchema,
 } from './base.js';
 
+// 授权管理器
+export { AuthManager, authManager, AuthCallbacks } from './auth-manager.js';
+
 // 熔断器
 export {
   CircuitBreaker,

@@ -32,6 +32,7 @@ import {
 } from '../types/agent.js';
 import type { VectorDatabaseConfig } from '../types/memory.js';
 import { ToolRegistry } from '../tools/index.js';
+import { authManager } from '../tools/auth-manager.js';
 import {
   TraceManager,
   SpanManager,
@@ -270,6 +271,9 @@ export class Controller {
       };
     }
 
+    // 清除授权拒绝记录，确保每次对话都是新的授权请求
+    authManager.clearRejectedAuths();
+
     // 初始化执行状态
     this.state = 'running';
     this.metrics = this.initMetrics();
@@ -359,11 +363,9 @@ export class Controller {
         },
         executeTool: async (toolName, args) => {
           try {
-            const tool = this.toolRegistry.getTool(toolName);
-            if (!tool) {
-              return `工具 ${toolName} 不存在`;
-            }
-            const result = await tool.run(args);
+            // 使用 toolRegistry.executeTool() 而不是 tool.run()
+            // 这样可以启用授权系统的交互式权限验证
+            const result = await this.toolRegistry.executeTool(toolName, args);
             return typeof result === 'string' ? result : JSON.stringify(result);
           } catch (error) {
             const errorMsg =

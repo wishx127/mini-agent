@@ -686,8 +686,13 @@ export class ExecutionEngine {
         if (stepResult.status !== 'success') {
           const step = stepsToExecute.find((s) => s.id === stepResult.stepId);
           if (step) {
+            // 检查是否是用户取消的错误（不应该重试）
+            const isUserCancelled =
+              stepResult.error?.includes('USER_CANCELLED') ||
+              stepResult.error?.includes('用户拒绝授权');
+
             // 检查步骤是否可重试
-            const isRetryable = step.retryable !== false; // 默认可重试
+            const isRetryable = step.retryable !== false && !isUserCancelled; // 默认可重试，但用户取消除外
 
             if (isRetryable) {
               // 检查重试预算

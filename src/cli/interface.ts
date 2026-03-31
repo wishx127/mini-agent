@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { AgentCore } from '../agent/core.js';
 import { ModelConfigManager } from '../config/model-config.js';
 import type { ModelConfig } from '../types/model-config.js';
+import { authManager } from '../tools/index.js';
 
 import { CommandSelector } from './command-selector.js';
 import { CommandRegistry, CommandLoader } from './commands/index.js';
@@ -73,6 +74,9 @@ export class CLIInterface {
   private inputMode: InputMode = 'normal';
   private normalInputBuffer: string = '';
 
+  // stdin 事件处理器（用于暂停/恢复）
+  private stdinHandler?: (data: string | Buffer) => void;
+
   constructor() {
     this.program = new Command();
     this.displayManager = new DisplayManager();
@@ -80,6 +84,71 @@ export class CLIInterface {
     this.commandSelector = new CommandSelector(this.commandRegistry);
     this.setupCommands();
     this.setupCommandRegistry();
+    this.setupAuthCallbacks();
+  }
+
+  /**
+   * 设置授权回调（用于暂停/恢复 spinner 和 CLI 输入）
+   */
+  private setupAuthCallbacks(): void {
+    authManager.setCallbacks({
+      onBeforeAsk: () => {
+        // 获取当前 loading 文本，然后暂停 spinner
+        const text = this.displayManager.getLoadingText();
+        this.displayManager.stopLoading();
+        return text;
+      },
+      onAfterAsk: (loadingText) => {
+        // 用户输入完成后，恢复 spinner（仅在当前没有 spinner 时）
+        if (loadingText && !this.displayManager.getLoadingText()) {
+          this.displayManager.startLoading(loadingText);
+        }
+      },
+      pauseCliInput: () => {
+        if (this.stdinHandler) {
+          process.stdin.removeListener('data', this.stdinHandler);
+        }
+        if (!process.stdin.isPaused()) {
+          process.stdin.pause();
+        }
+      },
+      resumeCliInput: () => {
+        try {
+          if (this.stdinHandler) {
+            process.stdin.removeListener('data', this.stdinHandler);
+            process.stdin.on('data', this.stdinHandler);
+          }
+          if (process.stdin.isPaused()) {
+            process.stdin.resume();
+          }
+          // 恢复raw mode，确保按键被正确捕获
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(true);
+          }
+          this.normalInputBuffer = '';
+          this.inputMode = 'normal';
+          this.commandSelector.deactivate();
+          this.showPrompt();
+        } catch (error) {
+          console.error(chalk.red('Error resuming CLI input:'), error);
+          try {
+            if (process.stdin.isPaused()) {
+              process.stdin.resume();
+            }
+            // 即使出错也尝试恢复raw mode
+            if (process.stdin.isTTY) {
+              process.stdin.setRawMode(true);
+            }
+            this.showPrompt();
+          } catch (fallbackError) {
+            console.error(
+              chalk.red('Failed to recover CLI input'),
+              fallbackError
+            );
+          }
+        }
+      },
+    });
   }
 
   /**
@@ -329,10 +398,14 @@ export class CLIInterface {
     process.stdin.resume();
     process.stdin.setEncoding('utf8');
 
-    // 处理按键输入
-    process.stdin.on('data', (key: string) => {
+    // 保存 stdin 处理器引用，以便暂停/恢复
+    this.stdinHandler = (data: string | Buffer) => {
+      const key = typeof data === 'string' ? data : data.toString('utf8');
       void this.handleKeyPress(key);
-    });
+    };
+
+    // 处理按键输入
+    process.stdin.on('data', this.stdinHandler);
 
     // 处理 Ctrl+C 和其他退出信号
     process.on('SIGINT', () => {
@@ -351,6 +424,14 @@ export class CLIInterface {
    * 处理按键输入
    */
   private async handleKeyPress(key: string): Promise<void> {
+    const segments = this.splitInputSegments(key);
+    if (segments.length > 1) {
+      for (const segment of segments) {
+        await this.handleKeyPress(segment);
+      }
+      return;
+    }
+
     // Ctrl+C
     if (key === '\x03') {
       this.quit();
@@ -365,6 +446,45 @@ export class CLIInterface {
 
     // 正常输入模式
     await this.handleNormalModeKey(key);
+  }
+
+  private splitInputSegments(key: string): string[] {
+    if (!key.includes('\n') && !key.includes('\r')) {
+      return [key];
+    }
+
+    const segments: string[] = [];
+    let buffer = '';
+
+    for (let i = 0; i < key.length; i += 1) {
+      const char = key[i];
+      if (char === '\r') {
+        if (key[i + 1] === '\n') {
+          i += 1;
+        }
+        if (buffer.length > 0) {
+          segments.push(buffer);
+          buffer = '';
+        }
+        segments.push('\n');
+        continue;
+      }
+      if (char === '\n') {
+        if (buffer.length > 0) {
+          segments.push(buffer);
+          buffer = '';
+        }
+        segments.push('\n');
+        continue;
+      }
+      buffer += char;
+    }
+
+    if (buffer.length > 0) {
+      segments.push(buffer);
+    }
+
+    return segments.length > 0 ? segments : ['\n'];
   }
 
   /**
