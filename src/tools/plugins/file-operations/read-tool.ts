@@ -1,5 +1,6 @@
 /* eslint-disable camelcase */
-import { readFile } from 'fs/promises';
+import { readFile, stat, realpath } from 'fs/promises';
+import path from 'path';
 
 import chalk from 'chalk';
 import { z } from 'zod';
@@ -8,10 +9,12 @@ import { BaseTool, ToolCategories } from '../../base.js';
 import { registerTool } from '../../registry.js';
 
 import {
-  validatePath,
   validateFileSize,
   validateTextFile,
+  getProjectRoot,
+  isPathWithinProject,
 } from './path-validator.js';
+import { FileOperationErrorCode, ToolError } from './types.js';
 
 /**
  * Read 工具 - 读取文件内容
@@ -40,22 +43,57 @@ export class ReadTool extends BaseTool {
       limit?: number;
     };
 
-    // 输出操作通知
+    // 输出操作通知（清除当前行并换行，避免与 spinner 重叠）
+    process.stdout.write('\r\x1b[K\n');
     console.log(`  ${chalk.gray('📄 read:')} ${chalk.dim(file_path)}`);
 
-    // 1. 验证路径安全性
-    const validation = await validatePath(file_path);
+    // 1. 解析完整路径（支持项目外路径）
+    const resolvedPath = path.isAbsolute(file_path)
+      ? file_path
+      : path.resolve(getProjectRoot(), file_path);
 
-    // 2. 验证文件大小（最大 1MB）
-    await validateFileSize(validation.realPath, 1);
+    // 2. 检查路径是否在项目范围内
+    if (!isPathWithinProject(resolvedPath)) {
+      throw new ToolError(
+        FileOperationErrorCode.PATH_ACCESS_DENIED,
+        `Cannot read file outside project directory: ${file_path}`,
+        {
+          operation: '读取文件',
+          path: file_path,
+          projectRoot: getProjectRoot(),
+        }
+      );
+    }
 
-    // 3. 验证是否为文本文件
-    await validateTextFile(validation.realPath);
+    // 3. 检查文件是否存在
+    try {
+      await stat(resolvedPath);
+    } catch {
+      throw new ToolError(
+        FileOperationErrorCode.PATH_NOT_FOUND,
+        `File not found: ${file_path}`,
+        { path: file_path }
+      );
+    }
 
-    // 4. 读取文件内容
-    const content = await readFile(validation.realPath, 'utf-8');
+    // 3. 使用 fs.realpath() 解析软链接获取真实路径
+    let realPath: string;
+    try {
+      realPath = await realpath(resolvedPath);
+    } catch {
+      realPath = resolvedPath;
+    }
 
-    // 5. 处理行范围
+    // 4. 验证文件大小（最大 1MB）
+    await validateFileSize(realPath, 1);
+
+    // 5. 验证是否为文本文件
+    await validateTextFile(realPath);
+
+    // 6. 读取文件内容
+    const content = await readFile(realPath, 'utf-8');
+
+    // 7. 处理行范围
     let resultContent: string;
     if (offset !== undefined || limit !== undefined) {
       resultContent = this.extractLines(content, offset, limit);
@@ -63,8 +101,8 @@ export class ReadTool extends BaseTool {
       resultContent = content;
     }
 
-    // 6. 添加 LLM 上下文集成 - 文件路径标识
-    return this.formatWithPathHeader(validation.realPath, resultContent);
+    // 8. 添加 LLM 上下文集成 - 文件路径标识
+    return this.formatWithPathHeader(realPath, resultContent);
   }
 
   /**

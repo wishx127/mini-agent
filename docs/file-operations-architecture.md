@@ -2,7 +2,7 @@
 
 ## 概述
 
-File Operations 是 mini-agent 框架的文件系统工具集，提供 `read`、`glob`、`grep` 三个核心工具，用于在安全的沙箱环境中执行文件读取、模式匹配和内容搜索操作。
+File Operations 是 mini-agent 框架的文件系统工具集，提供完整的文件操作能力，包括读取、写入、创建、删除、移动、搜索等功能，用于在安全的沙箱环境中执行文件操作。
 
 ## 技术栈
 
@@ -19,24 +19,34 @@ File Operations 是 mini-agent 框架的文件系统工具集，提供 `read`、
 ### 1. 整体架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Agent 执行层                             │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   ReadTool  │  │   GlobTool  │  │     GrepTool        │  │
-│  │  (文件读取)  │  │ (模式匹配)   │  │   (内容搜索)         │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
-│         │                │                    │             │
-│         └────────────────┼────────────────────┘             │
-│                          │                                  │
-│         ┌────────────────┴────────────────┐                 │
-│         │      PathValidator               │                 │
-│         │  (路径安全验证 / 文件类型检测)      │                 │
-│         └─────────────────────────────────┘                 │
-├─────────────────────────────────────────────────────────────┤
-│                   Tool Registry (工具注册表)                  │
-│              @registerTool() 装饰器自动收集                   │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Agent 执行层                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  ┌───────────┐   │
+│  │   ReadTool  │  │   GlobTool  │  │     GrepTool        │  │  LSTool   │   │
+│  │  (文件读取)  │  │ (模式匹配)   │  │   (内容搜索)         │  │ (目录列表) │   │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  └─────┬─────┘   │
+│         │                │                    │                   │         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  ┌───────────┐   │
+│  │  WriteTool  │  │  CreateTool │  │     DeleteTool      │  │  MoveTool │   │
+│  │  (写入文件)  │  │ (创建文件)   │  │   (删除文件/目录)    │  │ (移动文件) │   │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  └─────┬─────┘   │
+│         │                │                    │                   │         │
+│  ┌─────────────┐         │                    │                   │         │
+│  │  MkdirTool  │         └────────────────────┼───────────────────┘         │
+│  │  (创建目录)  │                              │                             │
+│  └──────┬──────┘                              │                             │
+│         │                                     │                             │
+│         └─────────────────────────────────────┼─────────────────────────────┘
+│                                               │                             │
+│         ┌─────────────────────────────────────┴─────────────────────────┐   │
+│         │                      PathValidator                             │   │
+│         │  (路径安全验证 / 文件类型检测 / 项目边界检查 / 授权管理)          │   │
+│         └─────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                   Tool Registry (工具注册表)                                  │
+│              @registerTool() 装饰器自动收集                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2. 模块职责
@@ -46,6 +56,12 @@ File Operations 是 mini-agent 框架的文件系统工具集，提供 `read`、
 | ReadTool      | `read-tool.ts`      | 读取文件内容，支持行范围选择         |
 | GlobTool      | `glob-tool.ts`      | 文件模式匹配，支持深度限制和排序     |
 | GrepTool      | `grep-tool.ts`      | 正则搜索文件内容，支持上下文显示     |
+| LSTool        | `ls-tool.ts`        | 列出目录内容，支持递归和筛选         |
+| CreateTool    | `create-tool.ts`    | 创建新文件，自动创建父目录           |
+| WriteTool     | `write-tool.ts`     | 写入文件内容，支持覆盖控制           |
+| DeleteTool    | `delete-tool.ts`    | 删除文件或目录，支持递归删除         |
+| MoveTool      | `move-tool.ts`      | 移动/重命名文件，自动创建目标目录    |
+| MkdirTool     | `mkdir-tool.ts`     | 创建新目录，支持递归创建             |
 | PathValidator | `path-validator.ts` | 路径安全验证、文件大小检查、编码检测 |
 | Types         | `types.ts`          | 错误码定义、自定义错误类             |
 | Index         | `index.ts`          | 统一导出入口                         |
@@ -67,12 +83,14 @@ readonly paramsSchema = z.object({
 
 **执行流程：**
 
-1. **路径安全验证** → `validatePath()` 确保路径在项目目录内
-2. **文件大小检查** → `validateFileSize()` 限制最大 1MB
-3. **文本文件检测** → `validateTextFile()` 防止读取二进制文件
-4. **内容读取** → `fs.readFile()` 读取 UTF-8 内容
-5. **行范围提取** → `extractLines()` 处理 offset/limit 参数
-6. **格式化输出** → 添加 `[File: path]` 标识头便于 LLM 识别
+1. **路径解析** → 使用 `path.resolve()` 将相对路径转为绝对路径（支持项目外路径）
+2. **文件存在检查** → `fs.stat()` 确认文件存在
+3. **软链接解析** → `fs.realpath()` 获取真实路径
+4. **文件大小检查** → `validateFileSize()` 限制最大 1MB
+5. **文本文件检测** → `validateTextFile()` 防止读取二进制文件
+6. **内容读取** → `fs.readFile()` 读取 UTF-8 内容
+7. **行范围提取** → `extractLines()` 处理 offset/limit 参数
+8. **格式化输出** → 添加 `[File: path]` 标识头便于 LLM 识别
 
 **安全机制：**
 
@@ -152,15 +170,188 @@ if (regex.multiline) {
 2 matches in 1 file
 ```
 
-### 4. PathValidator - 路径安全验证
+### 4. LSTool - 目录列表工具
+
+**技术实现：**
+
+```typescript
+readonly paramsSchema = z.object({
+  path: z.string().optional().describe('要列出的目录路径'),
+  type: z.enum(['files', 'dirs', 'all']).optional().describe('筛选类型'),
+  show_hidden: z.boolean().optional().describe('是否显示隐藏文件'),
+  recursive: z.boolean().optional().describe('是否递归遍历'),
+  max_depth: z.number().optional().describe('最大递归深度'),
+  sort_by: z.enum(['name', 'time']).optional().describe('排序方式'),
+});
+```
+
+**执行流程：**
+
+1. **路径解析** → 解析目标目录路径（支持绝对路径和相对路径）
+2. **目录验证** → 检查路径是否存在且为目录
+3. **读取目录** → `fs.readdir()` 获取目录项
+4. **类型筛选** → 根据 `type` 参数筛选文件或目录
+5. **隐藏文件控制** → 根据 `show_hidden` 参数过滤隐藏文件
+6. **递归遍历** → 根据 `recursive` 和 `max_depth` 递归处理子目录
+7. **排序输出** → 根据 `sort_by` 参数按名称或时间排序
+
+**输出格式示例：**
+
+```
+📂 Directory: src/tools
+
+📁 file-operations/
+📁 search/
+📄 base.ts
+📄 index.ts
+📄 registry.ts
+
+Total: 5 items
+```
+
+### 5. CreateTool - 创建文件工具
+
+**技术实现：**
+
+```typescript
+readonly paramsSchema = z.object({
+  file_path: z.string().describe('要创建的文件路径'),
+  overwrite: z.boolean().optional().describe('是否覆盖已存在文件'),
+  require_auth: z.boolean().optional().describe('是否已获取用户授权'),
+});
+```
+
+**执行流程：**
+
+1. **路径检查** → 检查路径是否以斜杠结尾（防止误将目录当文件）
+2. **路径解析** → 解析完整路径（支持绝对路径和相对路径）
+3. **项目边界检查** → `isPathWithinProject()` 检查路径是否在项目内
+4. **授权验证** → 项目外路径需要 `require_auth` 授权
+5. **文件存在检查** → 检查文件是否已存在，根据 `overwrite` 决定是否覆盖
+6. **目录检查** → 确保路径不是已存在的目录
+7. **创建父目录** → `ensureDirectoryExists()` 自动创建父目录
+8. **创建文件** → `fs.writeFile()` 创建空文件
+
+**安全机制：**
+
+- 项目外路径需要显式授权（`require_auth: true`）
+- 防止覆盖已存在文件（除非明确设置 `overwrite: true`）
+- 自动创建父目录，但项目外需要授权
+
+### 6. WriteTool - 写入文件工具
+
+**技术实现：**
+
+```typescript
+readonly paramsSchema = z.object({
+  file_path: z.string().describe('要写入的文件路径'),
+  content: z.string().describe('要写入的内容'),
+  overwrite: z.boolean().optional().describe('是否覆盖已存在文件，默认true'),
+  require_auth: z.boolean().optional().describe('是否已获取用户授权'),
+});
+```
+
+**执行流程：**
+
+1. **路径解析** → 解析完整路径（支持绝对路径和相对路径）
+2. **项目边界检查** → `isPathWithinProject()` 检查路径是否在项目内
+3. **授权验证** → 项目外路径需要 `require_auth` 授权
+4. **文件存在检查** → 检查文件是否已存在，根据 `overwrite` 决定是否覆盖
+5. **创建父目录** → `ensureDirectoryExists()` 自动创建父目录
+6. **写入内容** → `fs.writeFile()` 写入文件内容
+
+**与 CreateTool 的区别：**
+
+- WriteTool 用于写入内容，CreateTool 用于创建空文件
+- WriteTool 默认允许覆盖（`overwrite: true`），CreateTool 默认不允许
+
+### 7. DeleteTool - 删除文件/目录工具
+
+**技术实现：**
+
+```typescript
+readonly paramsSchema = z.object({
+  file_path: z.string().describe('要删除的文件或文件夹路径'),
+  recursive: z.boolean().optional().default(false).describe('是否递归删除'),
+  require_auth: z.boolean().optional().describe('是否已获取用户授权'),
+});
+```
+
+**执行流程：**
+
+1. **路径解析** → 解析完整路径（支持绝对路径和相对路径）
+2. **项目边界检查** → `isPathWithinProject()` 检查路径是否在项目内
+3. **授权验证** → 项目外路径需要 `require_auth` 授权
+4. **存在检查** → `fs.stat()` 确认文件/目录存在
+5. **执行删除** → `fs.rm()` 删除文件或目录（支持递归删除）
+
+**安全机制：**
+
+- 项目外路径需要显式授权
+- 删除目录时需要设置 `recursive: true`
+- 返回明确的删除确认信息
+
+### 8. MoveTool - 移动/重命名文件工具
+
+**技术实现：**
+
+```typescript
+readonly paramsSchema = z.object({
+  source_path: z.string().describe('源文件路径'),
+  target_path: z.string().describe('目标路径'),
+  overwrite: z.boolean().optional().describe('是否覆盖已存在文件'),
+  require_auth: z.boolean().optional().describe('是否已获取用户授权'),
+});
+```
+
+**执行流程：**
+
+1. **源路径解析** → 解析源文件路径并检查是否存在
+2. **源路径边界检查** → 确保源路径在项目目录内
+3. **源路径类型检查** → 确保源路径是文件而非目录
+4. **目标路径解析** → 解析目标路径
+5. **目标路径边界检查** → 项目外路径需要授权
+6. **目标路径确定** → 如果目标是目录，将文件移入该目录
+7. **覆盖检查** → 检查目标是否已存在，根据 `overwrite` 决定
+8. **创建父目录** → 确保目标父目录存在
+9. **执行移动** → `fs.rename()` 移动文件
+
+**安全机制：**
+
+- 源文件必须在项目目录内
+- 目标路径在项目外需要授权
+- 默认不覆盖已存在文件
+
+### 9. MkdirTool - 创建目录工具
+
+**技术实现：**
+
+```typescript
+readonly paramsSchema = z.object({
+  dir_path: z.string().describe('要创建的目录路径'),
+  recursive: z.boolean().optional().describe('是否递归创建父目录，默认true'),
+  require_auth: z.boolean().optional().describe('是否已获取用户授权'),
+});
+```
+
+**执行流程：**
+
+1. **路径解析** → 解析完整路径（支持绝对路径和相对路径）
+2. **项目边界检查** → `isPathWithinProject()` 检查路径是否在项目内
+3. **授权验证** → 项目外路径需要 `require_auth` 授权
+4. **存在检查** → 检查目录是否已存在
+5. **创建目录** → `fs.mkdir()` 创建目录（支持递归创建）
+
+### 10. PathValidator - 路径安全验证
 
 **核心算法：**
 
 ```typescript
 // 路径边界检查
-function isPathWithinProject(targetPath: string): boolean {
+export function isPathWithinProject(targetPath: string): boolean {
+  const root = getProjectRoot();
   const normalizedTarget = path.normalize(targetPath);
-  const normalizedRoot = path.normalize(normalizedProjectRoot);
+  const normalizedRoot = path.normalize(root);
 
   // 添加路径分隔符确保精确匹配
   const targetWithSep = normalizedTarget.endsWith(path.sep)
@@ -179,10 +370,29 @@ function isPathWithinProject(targetPath: string): boolean {
 **验证流程：**
 
 1. **路径解析** → `path.resolve()` 将相对路径转为绝对路径
-2. **初步边界检查** → 验证解析后的路径在项目根目录内
+2. **项目边界检查** → `isPathWithinProject()` 验证路径在项目根目录内
 3. **文件存在检查** → `fs.stat()` 确认文件/目录存在
 4. **软链接解析** → `fs.realpath()` 获取真实路径
 5. **二次边界检查** → 再次验证真实路径不越界
+
+**新增功能：**
+
+```typescript
+// 获取项目根目录
+export function getProjectRoot(): string;
+
+// 确保目录存在（自动创建父目录）
+export async function ensureDirectoryExists(
+  filePath: string,
+  requireAuth: boolean
+): Promise<void>;
+
+// 检查是否为目录
+export async function isDirectory(targetPath: string): Promise<boolean>;
+
+// 检查源路径是否存在（用于 Move 工具）
+export async function sourcePathExists(sourcePath: string): Promise<boolean>;
+```
 
 **文本文件检测：**
 
@@ -314,8 +524,20 @@ toLangChainTool(): LangChainToolDefinition {
 ### 路径沙箱
 
 - **PROJECT_ROOT** 环境变量定义项目根目录
-- 所有文件操作被限制在项目目录内
+- 所有文件操作默认被限制在项目目录内
+- 支持项目外路径操作，但需要显式授权（`require_auth: true`）
 - 软链接会被解析并验证真实路径
+
+### 授权机制
+
+| 操作类型 | 项目内 | 项目外 |
+| -------- | ------ | ------ |
+| 读取     | 允许   | 允许   |
+| 写入     | 允许   | 需授权 |
+| 创建     | 允许   | 需授权 |
+| 删除     | 允许   | 需授权 |
+| 移动     | 允许   | 需授权 |
+| 创建目录 | 允许   | 需授权 |
 
 ### 资源限制
 
@@ -330,12 +552,22 @@ toLangChainTool(): LangChainToolDefinition {
 
 ```typescript
 export enum FileOperationErrorCode {
+  // 原有错误码
   PATH_NOT_FOUND = 'PATH_NOT_FOUND',
   PATH_ACCESS_DENIED = 'PATH_ACCESS_DENIED',
   FILE_TOO_LARGE = 'FILE_TOO_LARGE',
   INVALID_ENCODING = 'INVALID_ENCODING',
   INVALID_REGEX = 'INVALID_REGEX',
   INVALID_GLOB_PATTERN = 'INVALID_GLOB_PATTERN',
+
+  // 新增错误码
+  WRITE_ERROR = 'WRITE_ERROR',
+  FILE_ALREADY_EXISTS = 'FILE_ALREADY_EXISTS',
+  IS_DIRECTORY = 'IS_DIRECTORY',
+  DELETE_ERROR = 'DELETE_ERROR',
+  MOVE_ERROR = 'MOVE_ERROR',
+  SOURCE_NOT_FOUND = 'SOURCE_NOT_FOUND',
+  USER_CANCELLED = 'USER_CANCELLED',
 }
 ```
 
@@ -389,7 +621,95 @@ await grepTool.execute({
 });
 ```
 
+### LSTool
+
+```typescript
+// 列出当前目录
+await lsTool.execute({});
+
+// 递归列出目录，仅显示文件
+await lsTool.execute({
+  path: 'src',
+  recursive: true,
+  type: 'files',
+  show_hidden: false,
+  sort_by: 'name',
+});
+```
+
+### CreateTool
+
+```typescript
+// 创建新文件
+await createTool.execute({ file_path: 'src/new-file.ts' });
+
+// 强制覆盖已存在文件
+await createTool.execute({
+  file_path: 'src/existing.ts',
+  overwrite: true,
+});
+```
+
+### WriteTool
+
+```typescript
+// 写入文件内容
+await writeTool.execute({
+  file_path: 'src/config.json',
+  content: '{"key": "value"}',
+});
+
+// 不覆盖已存在文件
+await writeTool.execute({
+  file_path: 'src/important.ts',
+  content: 'console.log("hello")',
+  overwrite: false,
+});
+```
+
+### DeleteTool
+
+```typescript
+// 删除文件
+await deleteTool.execute({ file_path: 'src/old-file.ts' });
+
+// 递归删除目录
+await deleteTool.execute({
+  file_path: 'src/old-folder',
+  recursive: true,
+});
+```
+
+### MoveTool
+
+```typescript
+// 重命名文件
+await moveTool.execute({
+  source_path: 'src/old-name.ts',
+  target_path: 'src/new-name.ts',
+});
+
+// 移动文件到目录
+await moveTool.execute({
+  source_path: 'src/file.ts',
+  target_path: 'src/utils/',
+});
+```
+
+### MkdirTool
+
+```typescript
+// 创建目录
+await mkdirTool.execute({ dir_path: 'src/new-folder' });
+
+// 递归创建嵌套目录
+await mkdirTool.execute({
+  dir_path: 'src/nested/deep/folder',
+  recursive: true,
+});
+```
+
 ---
 
-_文档版本: 1.0_
-_最后更新: 2026-03-29_
+_文档版本: 2.0_
+_最后更新: 2026-03-30_

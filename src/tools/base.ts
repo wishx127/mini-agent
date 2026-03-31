@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CircuitBreaker } from './circuit-breaker.js';
 import { ToolCategoryRegistry } from './category-registry.js';
+import { authManager } from './auth-manager.js';
 
 /**
  * 工具分类常量（运行时可访问的值）
@@ -639,7 +640,7 @@ export class ToolRegistry {
   }
 
   /**
-   * 执行工具
+   * 执行工具（支持交互式授权）
    */
   async executeTool(
     name: string,
@@ -658,6 +659,42 @@ export class ToolRegistry {
     try {
       return await tool.run(params);
     } catch (error) {
+      // 检查是否需要用户授权（使用全局单例）
+      if (authManager.isAuthRequired(error)) {
+        const details = authManager.extractAuthDetails(error);
+        const allowed = await authManager.askForAuth(details);
+
+        if (allowed) {
+          // 用户授权，重新执行工具并传入 require_auth: true
+          const authParams = { ...params, require_auth: true };
+          try {
+            return await tool.run(authParams);
+          } catch (retryError) {
+            const errorMsg =
+              retryError instanceof Error
+                ? retryError.message
+                : 'Unknown error';
+            throw new Error(
+              `Tool '${name}' execution failed after authorization: ${errorMsg}`
+            );
+          }
+        } else {
+          // 用户拒绝授权 - 抛出 ToolError 使用 USER_CANCELLED 错误码
+          // 这样执行引擎可以识别并跳过重试
+          const { ToolError, FileOperationErrorCode } =
+            await import('./plugins/file-operations/types.js');
+          throw new ToolError(
+            FileOperationErrorCode.USER_CANCELLED,
+            `用户拒绝授权：不允许 "${details.operation}" 操作在路径 "${details.path}"`,
+            {
+              operation: details.operation,
+              path: details.path,
+              projectRoot: details.projectRoot,
+            }
+          );
+        }
+      }
+
       throw new Error(
         `Tool '${name}' execution failed: ${
           error instanceof Error ? error.message : 'Unknown error'

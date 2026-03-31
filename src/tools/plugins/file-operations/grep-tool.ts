@@ -94,7 +94,8 @@ export class GrepTool extends BaseTool {
       maxFiles?: number;
     };
 
-    // 输出操作通知
+    // 输出操作通知（清除当前行并换行，避免与 spinner 重叠）
+    process.stdout.write('\r\x1b[K\n');
     const target = filePath || glob || '.';
     console.log(
       `  ${chalk.gray('🔍 grep:')} ${chalk.dim(pattern)} ${chalk.gray('in')} ${chalk.dim(target)}`
@@ -177,14 +178,19 @@ export class GrepTool extends BaseTool {
     if (globPattern) {
       // Glob 模式
       // 确定搜索目录：优先使用传入的 cwd，否则使用项目根目录
-      const searchCwd = cwd ? path.resolve(projectRoot, cwd) : projectRoot;
+      // 如果用户输入的是绝对路径，直接使用；否则相对于项目根目录解析
+      const searchCwd = cwd
+        ? path.isAbsolute(cwd)
+          ? cwd
+          : path.resolve(projectRoot, cwd)
+        : projectRoot;
 
       // 验证搜索目录在项目内
       if (!this.isPathWithinProject(searchCwd, projectRoot)) {
         throw new ToolError(
           FileOperationErrorCode.PATH_ACCESS_DENIED,
           `Access denied: ${cwd} is outside project directory`,
-          { path: cwd, projectRoot }
+          { operation: '搜索文件内容', path: cwd, projectRoot }
         );
       }
 

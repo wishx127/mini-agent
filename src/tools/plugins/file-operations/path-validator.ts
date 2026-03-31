@@ -1,4 +1,4 @@
-import { realpath, stat, open } from 'fs/promises';
+import { realpath, stat, open, mkdir, access } from 'fs/promises';
 import path from 'path';
 
 import { ToolError, FileOperationErrorCode } from './types.js';
@@ -99,10 +99,13 @@ export async function validatePath(
  * @param targetPath 要检查的路径
  * @returns 是否在项目目录内
  */
-function isPathWithinProject(targetPath: string): boolean {
+export function isPathWithinProject(targetPath: string): boolean {
+  // 使用 getProjectRoot() 确保与工具使用相同的项目根目录
+  const root = getProjectRoot();
+
   // 规范化路径，确保分隔符一致
   const normalizedTarget = path.normalize(targetPath);
-  const normalizedRoot = path.normalize(normalizedProjectRoot);
+  const normalizedRoot = path.normalize(root);
 
   // 使用 startsWith 检查路径前缀
   // 添加路径分隔符确保精确匹配（防止 /project-foo 匹配 /project）
@@ -246,4 +249,64 @@ function isValidASCII(buffer: Buffer): boolean {
  */
 export function getProjectRoot(): string {
   return normalizedProjectRoot;
+}
+
+/**
+ * 确保父目录存在，如果不存在则自动创建
+ * 项目目录内默认可创建，项目外需要授权
+ * @param filePath 文件路径
+ * @param requireAuth 是否需要用户授权（用于项目外目录创建）
+ * @throws ToolError 项目外目录创建且未授权时抛出错误
+ */
+export async function ensureDirectoryExists(
+  filePath: string,
+  requireAuth: boolean = false
+): Promise<void> {
+  const parentDir = path.dirname(filePath);
+  try {
+    await access(parentDir);
+  } catch {
+    // 目录不存在，需要创建
+    // 检查路径是否在项目目录内
+    if (!isPathWithinProject(parentDir)) {
+      if (!requireAuth) {
+        throw new ToolError(
+          FileOperationErrorCode.PATH_ACCESS_DENIED,
+          `无法创建目录，因为目标路径超出了项目允许的范围，操作被拒绝。如需在项目外创建目录，请先获取用户授权。`,
+          { path: parentDir, projectRoot: normalizedProjectRoot }
+        );
+      }
+      // 已授权，允许在项目外创建
+    }
+    // 递归创建目录
+    await mkdir(parentDir, { recursive: true });
+  }
+}
+
+/**
+ * 检查路径是否为目录
+ * @param targetPath 要检查的路径
+ * @returns 是否为目录
+ */
+export async function isDirectory(targetPath: string): Promise<boolean> {
+  try {
+    const stats = await stat(targetPath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 检查源路径是否存在（用于 Move 工具）
+ * @param sourcePath 源路径
+ * @returns 是否存在
+ */
+export async function sourcePathExists(sourcePath: string): Promise<boolean> {
+  try {
+    await access(sourcePath);
+    return true;
+  } catch {
+    return false;
+  }
 }

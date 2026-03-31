@@ -71,19 +71,25 @@ export class GlobTool extends BaseTool {
       order?: 'asc' | 'desc';
     };
 
-    // 输出操作通知
+    // 输出操作通知（清除当前行并换行，避免与 spinner 重叠）
+    process.stdout.write('\r\x1b[K\n');
     console.log(`  ${chalk.gray('📁 glob:')} ${chalk.dim(pattern)}`);
 
     // 1. 确定搜索目录
     const projectRoot = getProjectRoot();
-    const searchCwd = cwd ? path.resolve(projectRoot, cwd) : projectRoot;
+    // 如果用户输入的是绝对路径，直接使用；否则相对于项目根目录解析
+    const searchCwd = cwd
+      ? path.isAbsolute(cwd)
+        ? cwd
+        : path.resolve(projectRoot, cwd)
+      : projectRoot;
 
     // 2. 验证搜索目录在项目内
     if (!this.isPathWithinProject(searchCwd, projectRoot)) {
       throw new ToolError(
         FileOperationErrorCode.PATH_ACCESS_DENIED,
         `Access denied: ${cwd || '.'} is outside project directory`,
-        { path: cwd || '.', projectRoot }
+        { operation: '搜索文件', path: cwd || '.', projectRoot }
       );
     }
 
