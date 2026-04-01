@@ -84,6 +84,14 @@ export class AuthManager {
   }
 
   /**
+   * 拒绝授权（用于外部标记拒绝状态）
+   * @param details 授权详情
+   */
+  rejectAuth(details: AuthDetails): void {
+    this.rejectedAuths.add(this.getAuthKey(details));
+  }
+
+  /**
    * 获取当前拒绝记录数量（用于调试）
    */
   getRejectedAuthCount(): number {

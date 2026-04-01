@@ -18,6 +18,27 @@ const Colors = {
 } as const;
 
 /**
+ * Diff 颜色定义 - 带有良好可读性的背景色
+ */
+const DiffColors = {
+  // 删除行 - 淡红色背景配深红色字体
+  removed: {
+    bg: chalk.bgHex('#ffeaea'), // 淡红色背景
+    text: chalk.hex('#c0392b'), // 深红色字体
+  },
+  // 新增行 - 淡绿色背景配深绿色字体
+  added: {
+    bg: chalk.bgHex('#e8f5e9'), // 淡绿色背景
+    text: chalk.hex('#27ae60'), // 深绿色字体
+  },
+  // 行号信息 - 淡蓝色背景配深蓝色字体
+  lineInfo: {
+    bg: chalk.bgHex('#e3f2fd'), // 淡蓝色背景
+    text: chalk.hex('#1976d2'), // 深蓝色字体
+  },
+} as const;
+
+/**
  * 加载动画样式 - 随机选择
  * 直接使用 cli-spinners 对象，避免 isUnicodeSupported 检查导致的问题
  */
@@ -223,5 +244,63 @@ export class DisplayManager {
    */
   isColorSupported(): boolean {
     return chalk.level > 0;
+  }
+
+  /**
+   * 显示 diff（文件变更对比）
+   * @param diffContent diff 字符串内容
+   * @param filePath 文件路径（可选，用于显示标题）
+   */
+  showDiff(diffContent: string, filePath?: string): void {
+    if (!diffContent || diffContent.trim().length === 0) {
+      return;
+    }
+
+    const lines = diffContent.split('\n');
+
+    // 显示标题
+    if (filePath) {
+      console.log();
+      console.log(Colors.dim('─'.repeat(Math.min(40, this.terminalWidth))));
+      console.log(Colors.secondary(`  变更: ${filePath}`));
+      console.log(Colors.dim('─'.repeat(Math.min(40, this.terminalWidth))));
+    }
+
+    // 解析并着色显示 diff，过滤掉不必要的头部信息
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+
+      // 跳过不必要的 diff 头部信息（包括行号信息）
+      if (
+        line.startsWith('diff --git') ||
+        line.startsWith('index ') ||
+        line.startsWith('new file') ||
+        line.startsWith('deleted file') ||
+        line.startsWith('+++') ||
+        line.startsWith('---') ||
+        line.startsWith('@@') ||
+        trimmedLine.startsWith('===')
+      ) {
+        continue;
+      }
+
+      if (line.startsWith('+')) {
+        // 新增行 - 淡绿色背景配深绿色字体
+        const styledLine = DiffColors.added.bg(DiffColors.added.text(line));
+        console.log(styledLine);
+      } else if (line.startsWith('-')) {
+        // 删除行 - 淡红色背景配深红色字体
+        const styledLine = DiffColors.removed.bg(DiffColors.removed.text(line));
+        console.log(styledLine);
+      } else if (trimmedLine.length > 0) {
+        // 上下文行（只显示非空行）
+        console.log(Colors.dim(line));
+      }
+    }
+
+    if (filePath) {
+      console.log(Colors.dim('─'.repeat(Math.min(40, this.terminalWidth))));
+    }
+    console.log();
   }
 }

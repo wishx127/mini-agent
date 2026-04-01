@@ -83,6 +83,14 @@ export class Controller {
   private spanManager: SpanManager;
   private modelName: string;
   private promptManager: PromptManager;
+  /**
+   * 工具执行完成回调
+   */
+  onToolExecuted?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string
+  ) => void;
 
   constructor(
     llm: ChatOpenAI,
@@ -375,6 +383,7 @@ export class Controller {
         },
         longTermMemoryReader: this.longTermMemoryReader ?? undefined,
         userInfoContext: userInfoContext || undefined,
+        onToolExecuted: this.onToolExecuted,
       });
 
       // 执行引擎，传入会话历史

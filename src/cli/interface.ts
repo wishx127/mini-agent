@@ -10,6 +10,14 @@ import { AgentCore } from '../agent/core.js';
 import { ModelConfigManager } from '../config/model-config.js';
 import type { ModelConfig } from '../types/model-config.js';
 import { authManager } from '../tools/index.js';
+import {
+  setAuthManager,
+  type AuthManager,
+  normalizeAuthPath,
+  buildAuthKey,
+  extractAuthDetailsFields,
+  getProjectRoot,
+} from '../tools/plugins/file-operations/index.js';
 
 import { CommandSelector } from './command-selector.js';
 import { CommandRegistry, CommandLoader } from './commands/index.js';
@@ -57,6 +65,109 @@ function getRandomLoadingMessage(): string {
  * 输入模式
  */
 type InputMode = 'normal' | 'command';
+
+/**
+ * AuthManager 适配器
+ * 将 src/tools/auth-manager.ts 中的 AuthManager 适配为 file-operations 模块期望的接口
+ */
+class AuthManagerAdapter implements AuthManager {
+  private originalAuthManager = authManager;
+  private authorizedKeys: Map<string, number> = new Map();
+  private readonly cacheDurationMs = 5 * 60 * 1000;
+
+  private isCachedAuthorized(key: string): boolean {
+    const timestamp = this.authorizedKeys.get(key);
+    if (!timestamp) {
+      return false;
+    }
+
+    if (Date.now() - timestamp > this.cacheDurationMs) {
+      this.authorizedKeys.delete(key);
+      return false;
+    }
+
+    return true;
+  }
+
+  async askForAuth(operation: string, details: unknown): Promise<boolean> {
+    const fields = extractAuthDetailsFields(details);
+    const authKey = buildAuthKey(operation, fields);
+
+    // 检查是否已被拒绝
+    if (
+      this.originalAuthManager.isAuthRejected({
+        operation: authKey,
+        path: '',
+        projectRoot: '',
+      })
+    ) {
+      return false;
+    }
+
+    // 检查是否已授权且未过期
+    if (this.isCachedAuthorized(authKey)) {
+      return true;
+    }
+
+    // 构建提示路径（用于显示给用户）
+    const promptPath = normalizeAuthPath(
+      fields.filePath ??
+        fields.path ??
+        fields.dirPath ??
+        fields.sourcePath ??
+        fields.targetPath
+    );
+
+    const granted = await this.originalAuthManager.askForAuth({
+      operation,
+      path: promptPath,
+      projectRoot: getProjectRoot(),
+    });
+
+    if (granted) {
+      this.authorizedKeys.set(authKey, Date.now());
+      this.originalAuthManager.clearRejectedAuth({
+        operation: authKey,
+        path: '',
+        projectRoot: '',
+      });
+    } else {
+      this.authorizedKeys.delete(authKey);
+      this.originalAuthManager.rejectAuth({
+        operation: authKey,
+        path: '',
+        projectRoot: '',
+      });
+    }
+
+    return granted;
+  }
+
+  isAuthorized(operation: string): boolean {
+    // 检查是否已被拒绝
+    if (
+      this.originalAuthManager.isAuthRejected({
+        operation,
+        path: '',
+        projectRoot: '',
+      })
+    ) {
+      return false;
+    }
+
+    // 检查是否已授权且未过期
+    return this.isCachedAuthorized(operation);
+  }
+
+  clearAuth(operation: string): void {
+    this.authorizedKeys.delete(operation);
+    this.originalAuthManager.clearRejectedAuth({
+      operation,
+      path: '',
+      projectRoot: '',
+    });
+  }
+}
 
 /**
  * CLI交互界面类
@@ -220,7 +331,16 @@ export class CLIInterface {
     try {
       const configManager = new ModelConfigManager(configPath);
       this.config = configManager.getConfig();
+
+      setAuthManager(new AuthManagerAdapter());
+
       this.agent = new AgentCore(this.config);
+
+      // 设置工具执行完成回调，用于显示 diff
+      const controller = this.agent.getController();
+      controller.onToolExecuted = (toolName, args, result) => {
+        this.handleToolExecuted(toolName, args, result);
+      };
 
       console.log();
       console.log(
@@ -242,6 +362,39 @@ export class CLIInterface {
         error instanceof Error ? error.message : error
       );
       process.exit(1);
+    }
+  }
+
+  /**
+   * 处理工具执行完成事件
+   * 用于显示 edit/patch 等修改文件工具的 diff
+   */
+  private handleToolExecuted(
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string
+  ): void {
+    // 只处理会修改文件的工具
+    const fileModificationTools = ['edit', 'patch', 'write'];
+    if (!fileModificationTools.includes(toolName)) {
+      return;
+    }
+
+    try {
+      const resultObj = JSON.parse(result) as {
+        success?: boolean;
+        diff?: string;
+        error?: { message?: string };
+      };
+
+      // 检查是否有 diff 内容
+      if (resultObj.success && resultObj.diff) {
+        const filePath =
+          (args.filePath as string) || (args.path as string) || '';
+        this.displayManager.showDiff(resultObj.diff, filePath);
+      }
+    } catch {
+      // 如果解析失败，忽略错误
     }
   }
 

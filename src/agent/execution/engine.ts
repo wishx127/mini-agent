@@ -48,6 +48,17 @@ export interface ExecutionEngineDeps {
     formatMemoriesForPrompt: (results: MemorySearchResult[]) => string;
   };
   userInfoContext?: string;
+  /**
+   * 工具执行完成回调
+   * @param toolName 工具名称
+   * @param args 工具参数
+   * @param result 工具执行结果
+   */
+  onToolExecuted?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string
+  ) => void;
 }
 
 export class ExecutionEngine {
@@ -640,7 +651,8 @@ export class ExecutionEngine {
     const waveResults = await executeAllWaves(
       waves,
       this.deps.executeTool,
-      config
+      config,
+      this.deps.onToolExecuted
     );
 
     this.lastWaveResults = waveResults;
