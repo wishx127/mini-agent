@@ -15,6 +15,7 @@ import {
   isPathWithinProject,
 } from './path-validator.js';
 import { FileOperationErrorCode, ToolError } from './types.js';
+import { getAuthManager, buildAuthKey } from './auth.js';
 
 /**
  * Move 工具 - 移动/重命名文件
@@ -109,12 +110,44 @@ export class MoveTool extends BaseTool {
       finalTargetPath = path.join(finalTargetPath, sourceFileName);
     }
 
-    // 5. 检查目标路径是否在项目目录内
-    // 如果目标路径在项目外且未授权，则抛出错误
-    if (!isPathWithinProject(finalTargetPath) && !require_auth) {
+    // 5. 检查是否需要用户授权（项目内外都需要授权）
+    const authManager = getAuthManager();
+    const authKey = buildAuthKey('move', {
+      sourcePath: sourceResolved,
+      targetPath: finalTargetPath,
+    });
+    let userGranted = false;
+    if (authManager) {
+      const isAuthorized = authManager.isAuthorized(authKey);
+
+      if (!isAuthorized) {
+        const granted = await authManager.askForAuth('move', {
+          sourcePath: sourceResolved,
+          targetPath: finalTargetPath,
+        });
+
+        if (!granted) {
+          throw new ToolError(
+            FileOperationErrorCode.UNAUTHORIZED_OPERATION,
+            `用户拒绝了移动操作授权: ${source_path} → ${target_path}`,
+            { sourcePath: source_path, targetPath: target_path }
+          );
+        }
+        userGranted = true;
+      } else {
+        userGranted = true;
+      }
+    }
+
+    // 6. 检查目标路径是否在项目目录内（项目外需要用户授权或require_auth标记）
+    if (
+      !isPathWithinProject(finalTargetPath) &&
+      !require_auth &&
+      !userGranted
+    ) {
       throw new ToolError(
         FileOperationErrorCode.PATH_ACCESS_DENIED,
-        `无法移动文件，因为目标路径超出了项目允许的范围，操作被拒绝。如需移动到项目外，请先获取用户授权（设置 require_auth 为 true）。`,
+        `无法移动文件，因为目标路径超出了项目允许的范围，操作被拒绝。如需移动到项目外，请先获取用户授权。`,
         {
           operation: '移动文件',
           path: target_path,
@@ -123,7 +156,7 @@ export class MoveTool extends BaseTool {
       );
     }
 
-    // 6. 检查目标文件是否已存在
+    // 7. 检查目标文件是否已存在
     const targetExists = await this.checkPathExists(finalTargetPath);
     if (targetExists && !overwrite) {
       throw new ToolError(
@@ -133,10 +166,10 @@ export class MoveTool extends BaseTool {
       );
     }
 
-    // 7. 确保目标父目录存在（项目内默认可创建，项目外需要授权）
+    // 8. 确保目标父目录存在（项目内默认可创建，项目外需要授权）
     await ensureDirectoryExists(finalTargetPath, require_auth);
 
-    // 8. 执行移动
+    // 9. 执行移动
     try {
       await rename(sourceResolved, finalTargetPath);
     } catch (error) {

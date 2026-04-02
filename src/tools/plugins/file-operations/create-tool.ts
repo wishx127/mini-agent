@@ -15,6 +15,7 @@ import {
   isPathWithinProject,
 } from './path-validator.js';
 import { FileOperationErrorCode, ToolError } from './types.js';
+import { getAuthManager, buildAuthKey } from './auth.js';
 
 /**
  * Create 工具 - 创建新文件
@@ -70,12 +71,40 @@ export class CreateTool extends BaseTool {
       ? file_path
       : path.resolve(getProjectRoot(), file_path);
 
-    // 3. 检查目标路径是否在项目范围内
-    // 如果路径在项目外且未获取授权，则拒绝操作
-    if (!isPathWithinProject(resolvedPath) && !require_auth) {
+    // 3. 检查文件是否已存在
+    const fileExists = await this.checkFileExists(resolvedPath);
+
+    // 4. 检查是否需要用户授权（项目内外都需要授权）
+    const authManager = getAuthManager();
+    const authKey = buildAuthKey('create', { filePath: resolvedPath });
+    let userGranted = false;
+    if (authManager) {
+      const isAuthorized = authManager.isAuthorized(authKey);
+
+      if (!isAuthorized) {
+        const granted = await authManager.askForAuth('create', {
+          filePath: resolvedPath,
+          isNewFile: !fileExists,
+        });
+
+        if (!granted) {
+          throw new ToolError(
+            FileOperationErrorCode.UNAUTHORIZED_OPERATION,
+            `用户拒绝了创建文件操作授权: ${file_path}`,
+            { path: file_path }
+          );
+        }
+        userGranted = true;
+      } else {
+        userGranted = true;
+      }
+    }
+
+    // 5. 检查目标路径是否在项目范围内（项目外需要用户授权或require_auth标记）
+    if (!isPathWithinProject(resolvedPath) && !require_auth && !userGranted) {
       throw new ToolError(
         FileOperationErrorCode.PATH_ACCESS_DENIED,
-        `无法创建文件，因为目标路径超出了项目允许的范围，操作被拒绝。如需在项目外创建文件，请先获取用户授权（设置 require_auth 为 true）。`,
+        `无法创建文件，因为目标路径超出了项目允许的范围，操作被拒绝。如需在项目外创建文件，请先获取用户授权。`,
         {
           operation: '创建文件',
           path: file_path,
@@ -84,8 +113,7 @@ export class CreateTool extends BaseTool {
       );
     }
 
-    // 5. 检查文件是否已存在
-    const fileExists = await this.checkFileExists(resolvedPath);
+    // 6. 检查文件是否已存在且不允许覆盖
     if (fileExists) {
       if (!overwrite) {
         throw new ToolError(
@@ -96,7 +124,7 @@ export class CreateTool extends BaseTool {
       }
     }
 
-    // 6. 检查是否尝试创建目录
+    // 7. 检查是否尝试创建目录
     if (await isDirectory(resolvedPath)) {
       throw new ToolError(
         FileOperationErrorCode.IS_DIRECTORY,
@@ -105,10 +133,10 @@ export class CreateTool extends BaseTool {
       );
     }
 
-    // 7. 确保父目录存在（项目内默认可创建，项目外需要授权）
+    // 8. 确保父目录存在（项目内默认可创建，项目外需要授权）
     await ensureDirectoryExists(resolvedPath, require_auth);
 
-    // 7. 创建空文件
+    // 9. 创建空文件
     try {
       await writeFile(resolvedPath, '', 'utf-8');
     } catch (error) {

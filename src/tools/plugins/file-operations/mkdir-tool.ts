@@ -10,6 +10,7 @@ import { registerTool } from '../../registry.js';
 
 import { getProjectRoot, isPathWithinProject } from './path-validator.js';
 import { FileOperationErrorCode, ToolError } from './types.js';
+import { getAuthManager, buildAuthKey } from './auth.js';
 
 /**
  * Mkdir 工具 - 创建新目录
@@ -53,14 +54,38 @@ export class MkdirTool extends BaseTool {
       ? dir_path
       : path.resolve(getProjectRoot(), dir_path);
 
-    // 2. 检查路径是否在项目目录内
+    // 2. 检查是否需要用户授权（项目内外都需要授权）
+    const authManager = getAuthManager();
+    const authKey = buildAuthKey('mkdir', { dirPath: resolvedPath });
+    let userGranted = false;
+    if (authManager) {
+      const isAuthorized = authManager.isAuthorized(authKey);
+
+      if (!isAuthorized) {
+        const granted = await authManager.askForAuth('mkdir', {
+          dirPath: resolvedPath,
+        });
+
+        if (!granted) {
+          throw new ToolError(
+            FileOperationErrorCode.UNAUTHORIZED_OPERATION,
+            `用户拒绝了创建目录操作授权: ${dir_path}`,
+            { path: dir_path }
+          );
+        }
+        userGranted = true;
+      } else {
+        userGranted = true;
+      }
+    }
+
+    // 3. 检查路径是否在项目目录内（项目外需要用户授权或require_auth标记）
     const isWithinProject = isPathWithinProject(resolvedPath);
 
-    // 3. 如果路径在项目外且未授权，抛出错误
-    if (!isWithinProject && !require_auth) {
+    if (!isWithinProject && !require_auth && !userGranted) {
       throw new ToolError(
         FileOperationErrorCode.PATH_ACCESS_DENIED,
-        `无法创建目录，因为目标路径超出了项目允许的范围，操作被拒绝。如需在项目外创建目录，请先获取用户授权（设置 require_auth 为 true）。`,
+        `无法创建目录，因为目标路径超出了项目允许的范围，操作被拒绝。如需在项目外创建目录，请先获取用户授权。`,
         { operation: '创建目录', path: dir_path, projectRoot: getProjectRoot() }
       );
     }

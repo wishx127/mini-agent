@@ -230,7 +230,12 @@ export async function executeWave(
     toolTimeout: number;
     maxConcurrentTools: number;
     waveTimeout: number;
-  }
+  },
+  onToolExecuted?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string
+  ) => void
 ): Promise<WaveExecutionResult> {
   const waveStartTime = Date.now();
   const { toolTimeout, maxConcurrentTools, waveTimeout } = config;
@@ -258,6 +263,11 @@ export async function executeWave(
         toolExecutor(step.toolName, resolvedArgs),
         timeoutPromise,
       ]);
+
+      // 触发工具执行完成回调
+      if (onToolExecuted && result !== undefined) {
+        onToolExecuted(step.toolName, resolvedArgs, result);
+      }
     } catch (e) {
       status =
         e instanceof Error && e.message === 'Tool execution timeout'
@@ -343,7 +353,12 @@ export async function executeAllWaves(
     toolTimeout: number;
     maxConcurrentTools: number;
     waveTimeout: number;
-  }
+  },
+  onToolExecuted?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string
+  ) => void
 ): Promise<WaveExecutionResult[]> {
   const allResults: WaveExecutionResult[] = [];
   const previousResults = new Map<string, ToolExecutionResult>();
@@ -353,7 +368,8 @@ export async function executeAllWaves(
       wave,
       toolExecutor,
       previousResults,
-      config
+      config,
+      onToolExecuted
     );
     allResults.push(waveResult);
 
