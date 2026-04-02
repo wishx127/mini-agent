@@ -118,20 +118,8 @@ export class Controller {
     this.costTracker = new CostTracker();
 
     // 初始化长期记忆管理器（如果配置了向量数据库）
-    console.log('🔧 [Controller] 配置信息:', {
-      enableLongTermMemory: this.config.enableLongTermMemory,
-      hasVectorDbConfig: !!vectorDbConfig,
-      longTermMemoryTopK: this.config.longTermMemoryTopK,
-      memoryExtractionThreshold: this.config.memoryExtractionThreshold,
-    });
 
     if (this.config.enableLongTermMemory && vectorDbConfig) {
-      console.log('📋 [Controller] 向量数据库配置:', {
-        supabaseUrl: vectorDbConfig.supabaseUrl ? '已配置' : '未配置',
-        supabaseApiKey: vectorDbConfig.supabaseApiKey ? '已配置' : '未配置',
-        tableName: vectorDbConfig.tableName || 'memories',
-      });
-
       const dbClient = new VectorDatabaseClient(vectorDbConfig);
       this.longTermMemoryReader = new LongTermMemoryReader(dbClient, {
         enabled: true,

@@ -214,7 +214,9 @@ export class AuthManager {
     if (error instanceof Error) {
       return (
         error.message.includes('PATH_ACCESS_DENIED') ||
-        error.message.includes('outside project directory')
+        error.message.includes('outside project directory') ||
+        error.message.includes('CONFIRMATION_REQUIRED') ||
+        error.message.includes('requires confirmation')
       );
     }
     return false;
