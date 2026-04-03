@@ -118,20 +118,8 @@ export class Controller {
     this.costTracker = new CostTracker();
 
     // 初始化长期记忆管理器（如果配置了向量数据库）
-    console.log('🔧 [Controller] 配置信息:', {
-      enableLongTermMemory: this.config.enableLongTermMemory,
-      hasVectorDbConfig: !!vectorDbConfig,
-      longTermMemoryTopK: this.config.longTermMemoryTopK,
-      memoryExtractionThreshold: this.config.memoryExtractionThreshold,
-    });
 
     if (this.config.enableLongTermMemory && vectorDbConfig) {
-      console.log('📋 [Controller] 向量数据库配置:', {
-        supabaseUrl: vectorDbConfig.supabaseUrl ? '已配置' : '未配置',
-        supabaseApiKey: vectorDbConfig.supabaseApiKey ? '已配置' : '未配置',
-        tableName: vectorDbConfig.tableName || 'memories',
-      });
-
       const dbClient = new VectorDatabaseClient(vectorDbConfig);
       this.longTermMemoryReader = new LongTermMemoryReader(dbClient, {
         enabled: true,
@@ -791,19 +779,32 @@ export class Controller {
     tools: { name: string; description: string; enabled: boolean }[]
   ): ToolInfo[] {
     return tools.map((tool) => {
-      // 如果是 BaseTool，提取参数定义
+      // 如果是 BaseTool，提取参数定义和超时时间
       const baseTool = tool as import('../tools/base.js').BaseTool;
       let parameters: Record<string, unknown> | undefined;
+      let timeout: number | undefined;
+
       if (typeof baseTool.toLangChainTool === 'function') {
         const langChainTool = baseTool.toLangChainTool();
         parameters = langChainTool.function.parameters;
       }
+
+      // 提取工具级别的超时时间
+      if ('timeout' in baseTool && typeof baseTool.timeout === 'number') {
+        timeout = baseTool.timeout;
+      }
+
+      // 提取一次性执行标记
+      const executeOnce =
+        'executeOnce' in baseTool ? baseTool.executeOnce : false;
 
       return {
         name: tool.name,
         description: tool.description,
         enabled: tool.enabled,
         parameters,
+        timeout,
+        executeOnce,
       };
     });
   }

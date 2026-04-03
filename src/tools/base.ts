@@ -149,6 +149,12 @@ export abstract class BaseTool {
   readonly timeout?: number;
 
   /**
+   * 是否为一次性执行工具（成功后不应再次调用）
+   * 适用于有副作用的工具，如 git commit、git push 等
+   */
+  readonly executeOnce?: boolean;
+
+  /**
    * 重试配置（可选）
    */
   readonly retryConfig?: RetryConfig;

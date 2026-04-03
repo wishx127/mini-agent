@@ -5,6 +5,7 @@ import {
   WaveExecutionResult,
   ExecutionWave,
   ToolCallStatus,
+  ToolInfo,
 } from './types.js';
 
 export function parseDependencyGraph(plan: Plan): Map<string, Set<string>> {
@@ -230,6 +231,7 @@ export async function executeWave(
     toolTimeout: number;
     maxConcurrentTools: number;
     waveTimeout: number;
+    toolInfoMap?: Map<string, ToolInfo>; // 工具信息映射，用于获取工具级别的超时时间
   },
   onToolExecuted?: (
     toolName: string,
@@ -238,7 +240,7 @@ export async function executeWave(
   ) => void
 ): Promise<WaveExecutionResult> {
   const waveStartTime = Date.now();
-  const { toolTimeout, maxConcurrentTools, waveTimeout } = config;
+  const { toolTimeout, maxConcurrentTools, waveTimeout, toolInfoMap } = config;
 
   const executeStepWithTimeout = async (
     step: PlanStep,
@@ -246,6 +248,9 @@ export async function executeWave(
   ): Promise<ToolExecutionResult> => {
     const startTime = Date.now();
     const resolvedArgs = resolveDependencies(step.arguments, previousResults);
+
+    // 使用工具级别的超时时间（如果有），否则使用默认超时
+    const stepTimeout = toolInfoMap?.get(step.toolName)?.timeout ?? toolTimeout;
 
     let status: ToolCallStatus = 'success';
     let result: string | undefined;
@@ -255,7 +260,7 @@ export async function executeWave(
       const timeoutPromise = new Promise<string>((_, reject) => {
         setTimeout(
           () => reject(new Error('Tool execution timeout')),
-          toolTimeout
+          stepTimeout
         );
       });
 
@@ -353,6 +358,7 @@ export async function executeAllWaves(
     toolTimeout: number;
     maxConcurrentTools: number;
     waveTimeout: number;
+    toolInfoMap?: Map<string, ToolInfo>; // 工具信息映射，用于获取工具级别的超时时间
   },
   onToolExecuted?: (
     toolName: string,

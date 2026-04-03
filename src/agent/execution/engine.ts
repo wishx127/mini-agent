@@ -223,18 +223,33 @@ export class ExecutionEngine {
           this.log('[REFLECT] 决策: 生成最终答案');
           await this.checkAndGenerateSummary();
 
-          // 调用规划器生成真正的最终答案
-          const context = this.buildPlanningContext(userPrompt);
-          const prompt = await this.buildFinalAnswerPrompt(context);
-          const response = await this.deps.llm.invoke(prompt);
-          const content = this.extractContent(response);
+          // 检查是否由一次性工具（如 git_commit/git_push）成功触发的终结
+          const toolResults = this.collectToolResults();
+          const successfulOnceTool = toolResults.find(
+            (r) => r.status === 'success' && r.executeOnce === true
+          );
+
+          let finalAnswer = '';
+          if (successfulOnceTool) {
+            // 操作型工具成功后，直接返回工具结果作为确认信息
+            finalAnswer = successfulOnceTool.result || '操作已成功完成';
+            this.log(
+              `[REFLECT] 一次性工具 [${successfulOnceTool.toolName}] 成功，直接返回确认信息`
+            );
+          } else {
+            // 非一次性工具场景：调用 LLM 生成最终答案
+            const context = this.buildPlanningContext(userPrompt);
+            const prompt = await this.buildFinalAnswerPrompt(context);
+            const response = await this.deps.llm.invoke(prompt);
+            finalAnswer = this.extractContent(response);
+          }
 
           this.metrics.recordPhaseTiming(
             'REFLECT',
             Date.now() - phaseStartTime
           );
           return {
-            finalAnswer: content,
+            finalAnswer,
             metrics: this.metrics.finalize('final_answer'),
           };
         }
@@ -268,7 +283,6 @@ export class ExecutionEngine {
             `[REFLECT] 决策: 重试工具: ${reflection.shouldRetryTools?.join(', ')}`
           );
           await this.checkAndGenerateSummary();
-          // 修复：移除 continue 语句，统一在循环末尾处理 phase 切换
           this.phase = 'ACT';
           this.terminationChecker.updateIteration();
           this.metrics.incrementIteration();
@@ -276,8 +290,20 @@ export class ExecutionEngine {
             'REFLECT',
             Date.now() - phaseStartTime
           );
-          // 注意：不在这里执行 executeAct，而是让循环自然进入下一个迭代
-          // 这样可以确保所有路径都执行 iteration++、metrics 记录、termination 判断
+          continue;
+        }
+
+        if (reflection.decision === 'continue') {
+          this.log('[REFLECT] 决策: 继续执行，进入重新规划');
+          await this.checkAndGenerateSummary();
+          this.phase = 'PLAN';
+          this.terminationChecker.updateIteration();
+          this.metrics.incrementIteration();
+          this.metrics.recordPhaseTiming(
+            'REFLECT',
+            Date.now() - phaseStartTime
+          );
+          continue;
         }
 
         await this.checkAndGenerateSummary();
@@ -638,6 +664,11 @@ export class ExecutionEngine {
     });
     this.log(`[ACT] 生成 ${waves.length} 个波次`);
 
+    // 创建工具信息映射，用于获取工具级别的超时时间
+    const toolInfoMap = new Map(
+      this.deps.tools.map((tool) => [tool.name, tool])
+    );
+
     const config = {
       toolTimeout: this.config.toolTimeout,
       maxConcurrentTools:
@@ -646,6 +677,7 @@ export class ExecutionEngine {
       waveTimeout:
         (this.config as unknown as { waveTimeout?: number }).waveTimeout ||
         60000,
+      toolInfoMap,
     };
 
     const waveResults = await executeAllWaves(
@@ -983,6 +1015,7 @@ export class ExecutionEngine {
     result?: string;
     error?: string;
     executionTime?: number;
+    executeOnce?: boolean;
   }> {
     const results: Array<{
       toolName: string;
@@ -990,15 +1023,21 @@ export class ExecutionEngine {
       result?: string;
       error?: string;
       executionTime?: number;
+      executeOnce?: boolean;
     }> = [];
     for (const waveResult of this.lastWaveResults) {
       for (const stepResult of waveResult.stepResults) {
+        // 从工具信息中获取 executeOnce 标记
+        const toolInfo = this.deps.tools.find(
+          (t) => t.name === stepResult.toolName
+        );
         results.push({
           toolName: stepResult.toolName,
           status: stepResult.status,
           result: stepResult.result,
           error: stepResult.error,
           executionTime: stepResult.duration,
+          executeOnce: toolInfo?.executeOnce,
         });
       }
     }

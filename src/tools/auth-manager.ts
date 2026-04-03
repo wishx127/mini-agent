@@ -51,6 +51,14 @@ export class AuthManager {
   }
 
   /**
+   * 获取回调函数（供工具使用）
+   * @returns 回调函数
+   */
+  getCallbacks(): AuthCallbacks | undefined {
+    return this.callbacks;
+  }
+
+  /**
    * 生成授权请求的唯一键
    * @param details 授权详情
    * @returns 唯一键
@@ -214,7 +222,9 @@ export class AuthManager {
     if (error instanceof Error) {
       return (
         error.message.includes('PATH_ACCESS_DENIED') ||
-        error.message.includes('outside project directory')
+        error.message.includes('outside project directory') ||
+        error.message.includes('CONFIRMATION_REQUIRED') ||
+        error.message.includes('requires confirmation')
       );
     }
     return false;

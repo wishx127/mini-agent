@@ -23,3 +23,49 @@ export {
   MoveTool,
   MkdirTool,
 } from './file-operations/index.js';
+
+// 导出 Git 操作工具
+export {
+  gitClone,
+  gitStatus,
+  gitBranch,
+  gitCommit,
+  gitPush,
+  gitPull,
+  gitLog,
+  gitReset,
+  gitClean,
+  GitCloneTool,
+  GitStatusTool,
+  GitBranchTool,
+  GitCommitTool,
+  GitPushTool,
+  GitPullTool,
+  GitLogTool,
+  GitResetTool,
+  GitCleanTool,
+} from './git/index.js';
+
+// 导出 Bash 执行工具
+export { bashExecute, bashExecSimple, BashTool } from './bash/index.js';
+
+// 导出命令安全模块
+export {
+  ErrorCode,
+  ErrorType,
+  type ToolError,
+  type ConfirmationDetails,
+  type CommandResult,
+  type ExecutionOptions,
+  validatePath,
+  validateWorkingDirectory,
+  detectDangerousCommand,
+  detectConfirmationRequired,
+  createConfirmationError,
+  concurrencyLimiter,
+  killProcessTree,
+  checkGitInstalled,
+} from './command-security/index.js';
+
+// 导出审计日志模块
+export { auditLogger, type AuditLogEntry } from './audit-logger/index.js';
