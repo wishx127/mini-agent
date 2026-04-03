@@ -3,7 +3,7 @@
  * 提供安全的 Git 命令执行功能
  */
 
-import { execFile } from 'child_process';
+import { execFile, exec } from 'child_process';
 
 import {
   ErrorCode,
@@ -127,18 +127,48 @@ export class GitExecutor {
   ): Promise<CommandResult> {
     const startTime = Date.now();
     const maxSize = maxOutputSize || DEFAULT_MAX_OUTPUT_SIZE;
+    const useShell = process.platform === 'win32';
 
     return new Promise((resolve) => {
       let stdout = '';
       let stderr = '';
       let killed = false;
 
-      const child = execFile('git', args, {
-        cwd,
-        shell: false,
-        maxBuffer: maxSize,
-        env: { ...process.env },
-      });
+      // 当使用 shell 时，需要正确转义参数（特别是包含空格或特殊字符的参数）
+      let child;
+      if (useShell) {
+        // Windows 上使用 shell，需要将参数正确转义
+        const escapedArgs = args.map((arg) => {
+          // 如果参数包含换行符，需要特殊处理（git commit 多行消息）
+          if (arg.includes('\n')) {
+            // 将多行文本转换为使用多个 -m 参数的形式
+            // 或者将换行符保留在引号内
+            // 这里选择：转义双引号，保留换行符，整体用双引号包裹
+            return `"${arg.replace(/"/g, '""')}"`;
+          }
+          // 如果参数包含空格、引号或特殊字符（但不包含换行符），需要用双引号包裹
+          if (/[ "'&|<>^]/.test(arg)) {
+            // 转义双引号，然后用双引号包裹
+            return `"${arg.replace(/"/g, '""')}"`;
+          }
+          return arg;
+        });
+        const command = `git ${escapedArgs.join(' ')}`;
+        child = exec(command, {
+          cwd,
+          maxBuffer: maxSize,
+          env: { ...process.env },
+          windowsHide: true,
+        });
+      } else {
+        // MacOS/Linux 上不使用 shell，更安全
+        child = execFile('git', args, {
+          cwd,
+          shell: false,
+          maxBuffer: maxSize,
+          env: { ...process.env },
+        });
+      }
 
       // 超时处理
       const timeoutId = setTimeout(() => {

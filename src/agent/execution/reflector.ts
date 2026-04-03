@@ -25,6 +25,7 @@ export interface ReflectionContext {
     result?: string;
     error?: string;
     executionTime?: number;
+    executeOnce?: boolean;
   }>;
   iteration: number;
   maxIterations: number;
@@ -333,6 +334,15 @@ export class Reflector {
       toolFailures,
       context,
     } = params;
+
+    // 检查是否有一次性工具成功执行
+    const hasSuccessfulOneOffTool = context.toolResults.some(
+      (r) => r.status === 'success' && r.executeOnce === true
+    );
+    if (hasSuccessfulOneOffTool) {
+      // 一次性工具成功执行后应立即结束
+      return 'finalize_answer';
+    }
 
     // 根据策略调整决策阈值
     const strategyMultipliers = this.getStrategyMultipliers();

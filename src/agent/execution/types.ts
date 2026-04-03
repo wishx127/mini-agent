@@ -395,6 +395,7 @@ export interface ToolInfo {
   lastUsedIteration?: number;
   failureCount?: number;
   timeout?: number; // 工具级别的超时时间（毫秒）
+  executeOnce?: boolean; // 是否为一次性执行工具
 }
 
 export interface DeduplicationState {

@@ -794,12 +794,17 @@ export class Controller {
         timeout = baseTool.timeout;
       }
 
+      // 提取一次性执行标记
+      const executeOnce =
+        'executeOnce' in baseTool ? baseTool.executeOnce : false;
+
       return {
         name: tool.name,
         description: tool.description,
         enabled: tool.enabled,
         parameters,
         timeout,
+        executeOnce,
       };
     });
   }

@@ -329,6 +329,20 @@ export async function gitCommit(
       );
       return { success: false, error };
     }
+  } else {
+    // 用户调用了 commit 但未指定 files 和 all 参数，
+    // 且工作区有更改（否则前面已返回）。
+    // 此时自动暂存所有更改以匹配用户的提交意图。
+    const autoAddResult = await executor.execute(['add', '-A'], {
+      cwd: options.cwd,
+    });
+    if (!autoAddResult.success) {
+      const error = GitExecutor.parseGitError(
+        autoAddResult.stderr,
+        autoAddResult.exitCode
+      );
+      return { success: false, error };
+    }
   }
 
   // 再次检查是否有已暂存的更改需要提交
@@ -345,7 +359,18 @@ export async function gitCommit(
     };
   }
 
-  const result = await executor.execute(['commit', '-m', options.message], {
+  // 处理多行提交信息：分割成多行，使用多个 -m 参数
+  // 这样可以确保每行都被正确处理，特别是在 Windows shell 中
+  // 过滤掉完全为空的行（避免 git commit -m "" 在 Windows 上解析错误）
+  const messageLines = options.message
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+  const commitArgs: string[] = ['commit'];
+  for (const line of messageLines) {
+    commitArgs.push('-m', line);
+  }
+
+  const result = await executor.execute(commitArgs, {
     cwd: options.cwd,
   });
 

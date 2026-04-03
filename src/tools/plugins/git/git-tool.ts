@@ -68,7 +68,12 @@ export class GitStatusTool extends BaseTool {
   readonly name = 'git_status';
 
   readonly description =
-    '查看 Git 仓库的当前状态，包括分支、已修改文件、已暂存文件列表';
+    '查看 Git 仓库的当前状态，包括分支、已修改文件、已暂存文件列表。' +
+    '\n\n**重要：在提交代码前必须先调用此工具查看有哪些变更。**' +
+    '\n\n**使用场景：**' +
+    '\n- 用户要求提交代码时，首先调用此工具查看变更' +
+    '\n- 用户想了解当前仓库状态时调用' +
+    '\n- 在执行 git commit、git add 等操作前查看状态';
 
   readonly category = ToolCategories.FILE_SYSTEM;
 
@@ -87,19 +92,44 @@ export class GitStatusTool extends BaseTool {
     if (result.success && result.data) {
       const { branch, modified, staged, untracked, ahead, behind } =
         result.data;
+
       let output = `Branch: ${branch}`;
       if (ahead > 0 || behind > 0) {
         output += ` (ahead ${ahead}, behind ${behind})`;
       }
+
+      // 明确区分已暂存和未暂存的文件
       if (staged.length > 0) {
-        output += `\nStaged: ${staged.join(', ')}`;
+        output += `\n\n已暂存的文件（准备提交）:`;
+        staged.forEach((file) => {
+          output += `\n  - ${file}`;
+        });
       }
+
       if (modified.length > 0) {
-        output += `\nModified: ${modified.join(', ')}`;
+        output += `\n\n已修改但未暂存的文件（需要先暂存才能提交）:`;
+        modified.forEach((file) => {
+          output += `\n  - ${file}`;
+        });
+        output += `\n\n提示：使用 git_commit({ all: true }) 可自动暂存并提交这些文件`;
       }
+
       if (untracked.length > 0) {
-        output += `\nUntracked: ${untracked.join(', ')}`;
+        output += `\n\n未跟踪的文件:`;
+        untracked.forEach((file) => {
+          output += `\n  - ${file}`;
+        });
       }
+
+      // 如果没有任何更改
+      if (
+        staged.length === 0 &&
+        modified.length === 0 &&
+        untracked.length === 0
+      ) {
+        output += `\n\n工作目录干净，没有需要提交的更改`;
+      }
+
       return output;
     }
 
@@ -170,7 +200,18 @@ export class GitCommitTool extends BaseTool {
   readonly name = 'git_commit';
 
   readonly description =
-    '提交代码更改到 Git 仓库。执行此工具时会向用户询问提交信息，支持多行输入。不要自动生成提交信息。';
+    '提交代码更改到 Git 仓库。这是一个交互式工具，会自动询问用户输入提交信息。' +
+    '\n\n**使用场景：**' +
+    '\n- 用户要求提交代码、commit、保存更改时调用此工具' +
+    '\n- 工具会自动暂停执行并询问用户输入提交信息（支持中文和英文）' +
+    '\n\n**调用方式：**' +
+    '\n- 通常情况：git_commit() - 提交已暂存的文件' +
+    '\n- 文件未暂存：git_commit({ all: true }) - 先暂存所有修改再提交' +
+    '\n\n**注意事项：**' +
+    '\n- 不需要通过参数传递提交信息，工具会询问用户' +
+    '\n- 用户输入的提交信息会被直接使用，支持中英文，不需要额外处理' +
+    '\n- 如果用户提供了提交信息作为上下文，仍然要调用此工具，工具会确认' +
+    '\n- 直接调用此工具即可，不要只是给用户建议或说明';
 
   readonly category = ToolCategories.FILE_SYSTEM;
 
@@ -179,10 +220,31 @@ export class GitCommitTool extends BaseTool {
    */
   readonly timeout = 600000; // 10 分钟
 
+  /**
+   * 标记为一次性执行工具，成功后不应再次调用
+   * git commit 是有副作用的操作，不应重复执行
+   */
+  readonly executeOnce = true;
+
   readonly paramsSchema = z.object({
-    files: z.array(z.string()).optional().describe('要提交的文件列表'),
-    all: z.boolean().optional().describe('暂存所有已修改文件'),
-    cwd: z.string().optional().describe('仓库路径'),
+    files: z
+      .array(z.string())
+      .optional()
+      .describe(
+        '【可选】指定要提交的文件列表。' +
+          '大多数情况下不需要此参数，工具会提交已暂存的文件。' +
+          '如果使用，文件路径应相对于仓库根目录。' +
+          '注意：此参数用于指定文件路径，不是提交信息。'
+      ),
+    all: z
+      .boolean()
+      .optional()
+      .describe(
+        '【可选】设为true会自动暂存所有修改后提交。' +
+          '仅当文件未暂存且需要提交时使用。' +
+          '如果文件已暂存，不需要此参数。'
+      ),
+    cwd: z.string().optional().describe('仓库路径（可选，默认为当前工作目录）'),
   });
 
   /**
@@ -318,7 +380,25 @@ export class GitCommitTool extends BaseTool {
       cwd?: string;
     };
 
-    const files = paramFiles;
+    // 校验并过滤 files 参数：
+    // LLM 经常误将提交信息文本传入 files 参数，
+    // 如果值看起来不像文件路径（含中文、空格、无路径分隔符等），则忽略。
+    const isValidFilePath = (value: string): boolean => {
+      if (!value || value.trim().length === 0) return false;
+      // 包含中文 → 很可能是提交信息而非文件路径
+      if (/[\u4e00-\u9fff]/.test(value)) return false;
+      // 包含空格且不以常见文件扩展名结尾 → 可能是句子
+      if (/\s/.test(value) && !/\.\w+$/.test(value)) return false;
+      // 长度超过 200 且不含 / 或 \ → 不太可能是文件路径
+      if (value.length > 200 && !/[\\/]/.test(value)) return false;
+      return true;
+    };
+
+    const files = Array.isArray(paramFiles)
+      ? paramFiles.filter(isValidFilePath)
+      : undefined;
+    // 如果过滤后 files 为空数组或未定义，视为未指定
+    const hasValidFiles = files !== undefined && files.length > 0;
     const all = paramAll;
 
     // 强制向用户询问提交信息
@@ -345,7 +425,12 @@ export class GitCommitTool extends BaseTool {
       `  ${chalk.gray('💾 git commit:')} ${chalk.dim(displayMessage)}`
     );
 
-    const result = await gitCommit({ message: commitMessage, files, all, cwd });
+    const result = await gitCommit({
+      message: commitMessage,
+      files: hasValidFiles ? files : undefined,
+      all,
+      cwd,
+    });
 
     if (result.success) {
       if (result.data?.hash) {
@@ -355,6 +440,23 @@ export class GitCommitTool extends BaseTool {
     }
 
     const errorMessage = result.error?.message || 'Unknown error';
+
+    // 提供更友好的错误提示
+    if (
+      errorMessage.includes('did not match any files') ||
+      errorMessage.includes('could not be matched')
+    ) {
+      throw new Error(
+        `提交失败：文件路径无法匹配。\n\n` +
+          `${errorMessage}\n\n` +
+          `建议解决方案：\n` +
+          `1. 使用 git status 查看当前修改的文件\n` +
+          `2. 使用 git add <file> 手动添加文件到暂存区\n` +
+          `3. 然后重新运行 git_commit 工具（不提供 files 参数）\n` +
+          `4. 或者使用 all: true 参数自动暂存所有修改`
+      );
+    }
+
     throw new Error(`Git commit failed: ${errorMessage}`);
   }
 }
@@ -366,6 +468,17 @@ export class GitPushTool extends BaseTool {
   readonly description = '将本地提交推送到远程仓库';
 
   readonly category = ToolCategories.FILE_SYSTEM;
+
+  /**
+   * 设置超时时间为 3 分钟，因为推送可能需要较长时间
+   */
+  readonly timeout = 180000; // 3 分钟
+
+  /**
+   * 标记为一次性执行工具，成功后不应再次调用
+   * git push 是有副作用的操作，不应重复执行
+   */
+  readonly executeOnce = true;
 
   readonly paramsSchema = z.object({
     remote: z.string().optional().describe('远程仓库名称'),
@@ -488,6 +601,12 @@ export class GitResetTool extends BaseTool {
     cwd: z.string().optional().describe('仓库路径'),
   });
 
+  /**
+   * 标记为一次性执行工具，成功后不应再次调用
+   * git reset 是有副作用的操作，不应重复执行
+   */
+  readonly executeOnce = true;
+
   async execute(params: Record<string, unknown>): Promise<string> {
     const { target, mode, confirmed, cwd } = params as {
       target?: string;
@@ -525,6 +644,12 @@ export class GitCleanTool extends BaseTool {
     confirmed: z.boolean().optional().describe('确认执行危险操作'),
     cwd: z.string().optional().describe('仓库路径'),
   });
+
+  /**
+   * 标记为一次性执行工具，成功后不应再次调用
+   * git clean 是有副作用的操作，不应重复执行
+   */
+  readonly executeOnce = true;
 
   async execute(params: Record<string, unknown>): Promise<string> {
     const { force, directories, dryRun, confirmed, cwd } = params as {
