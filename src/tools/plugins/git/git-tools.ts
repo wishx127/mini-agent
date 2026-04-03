@@ -253,7 +253,10 @@ export async function gitBranch(
         return { success: false, error };
       }
 
-      return { success: true, data: { deleted: options.name } };
+      return {
+        success: true,
+        data: { deleted: options.name, stdout: result.stdout },
+      };
     }
 
     default:
@@ -289,6 +292,19 @@ export async function gitCommit(
     };
   }
 
+  // 先检查是否有需要提交的更改
+  const statusResult = await executor.execute(['status', '--porcelain'], {
+    cwd: options.cwd,
+  });
+
+  if (statusResult.success && !statusResult.stdout.trim()) {
+    // 工作目录干净，没有需要提交的更改
+    return {
+      success: true,
+      data: { hash: '' },
+    };
+  }
+
   if (options.files && options.files.length > 0) {
     const addResult = await executor.execute(['add', ...options.files], {
       cwd: options.cwd,
@@ -313,6 +329,20 @@ export async function gitCommit(
       );
       return { success: false, error };
     }
+  }
+
+  // 再次检查是否有已暂存的更改需要提交
+  const stagedResult = await executor.execute(
+    ['diff', '--cached', '--name-only'],
+    { cwd: options.cwd }
+  );
+
+  if (stagedResult.success && !stagedResult.stdout.trim()) {
+    // 没有已暂存的更改，无需提交
+    return {
+      success: true,
+      data: { hash: '' },
+    };
   }
 
   const result = await executor.execute(['commit', '-m', options.message], {

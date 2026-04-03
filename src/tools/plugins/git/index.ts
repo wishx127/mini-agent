@@ -42,12 +42,3 @@ export {
   GitResetTool,
   GitCleanTool,
 } from './git-tool.js';
-
-export {
-  CommitApiServer,
-  commitApiServer,
-  getPendingCommitMessage,
-  clearPendingCommitMessage,
-  type CommitMessageRequest,
-  type CommitMessageResponse,
-} from './commit-api-server.js';

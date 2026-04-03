@@ -3,11 +3,14 @@
  * 提供安全的 Git 版本控制操作能力
  */
 
+import readline from 'readline';
+
 import chalk from 'chalk';
 import { z } from 'zod';
 
 import { BaseTool, ToolCategories } from '../../base.js';
 import { registerTool } from '../../registry.js';
+import { authManager } from '../../auth-manager.js';
 
 import {
   gitClone,
@@ -146,7 +149,10 @@ export class GitBranchTool extends BaseTool {
         return `Branch '${name}' created and switched`;
       }
       if (action === 'delete') {
-        return `Branch '${name}' deleted`;
+        const deleteData = result.data as { deleted: string; stdout?: string };
+        const forceInfo = force ? ' (forced)' : '';
+        const gitOutput = deleteData.stdout || '';
+        return `Branch '${name}' deleted${forceInfo}${gitOutput ? '\n' + gitOutput : ''}`;
       }
       if (action === 'switch') {
         return `Switched to branch '${name}'`;
@@ -164,71 +170,188 @@ export class GitCommitTool extends BaseTool {
   readonly name = 'git_commit';
 
   readonly description =
-    '提交代码更改到 Git 仓库。支持直接传入 message，或通过 IDE 扩展调用 API 获取提交信息。';
+    '提交代码更改到 Git 仓库。执行此工具时会向用户询问提交信息，支持多行输入。不要自动生成提交信息。';
 
   readonly category = ToolCategories.FILE_SYSTEM;
 
+  /**
+   * 设置超时时间为 10 分钟，因为需要用户交互式输入提交信息
+   */
+  readonly timeout = 600000; // 10 分钟
+
   readonly paramsSchema = z.object({
-    message: z
-      .string()
-      .optional()
-      .describe(
-        '提交信息。如不提供，将尝试从 IDE API 获取（需要 IDE 扩展支持）。'
-      ),
     files: z.array(z.string()).optional().describe('要提交的文件列表'),
     all: z.boolean().optional().describe('暂存所有已修改文件'),
     cwd: z.string().optional().describe('仓库路径'),
   });
 
+  /**
+   * 向用户询问提交信息，支持多行输入
+   * 连续两次 Enter（空行）结束输入
+   */
+  private async askForCommitMessage(): Promise<string> {
+    const callbacks = authManager.getCallbacks();
+
+    // 暂停 spinner 和 CLI 输入，避免与工具的用户输入冲突
+    const loadingText = callbacks?.onBeforeAsk?.();
+    callbacks?.pauseCliInput?.();
+
+    // 清除可能的 spinner 行，确保提示可见
+    process.stdout.write('\r\x1b[K');
+
+    return new Promise((resolve, reject) => {
+      const lines: string[] = [];
+      let isDone = false;
+      let emptyLineCount = 0;
+
+      console.log(chalk.cyan('\n请输入提交信息：'));
+      console.log(chalk.gray('- 输入内容后按 Enter 换行'));
+      console.log(chalk.gray('- 连续按两次 Enter（空行）结束输入'));
+      console.log(chalk.gray('- 支持直接粘贴多行文本\n'));
+
+      // 使用 readline 创建接口，启用 terminal 模式以支持行编辑（退格、删除等）
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: true,
+      });
+
+      // 统一的清理函数
+      const cleanup = () => {
+        if (isDone) return;
+        isDone = true;
+
+        // 移除所有事件监听器，避免内存泄漏和重复调用
+        rl.removeAllListeners();
+
+        // 关闭 readline 接口
+        try {
+          rl.close();
+        } catch {
+          // 忽略关闭错误
+        }
+
+        // 恢复 spinner 和 CLI 输入
+        callbacks?.resumeCliInput?.();
+        callbacks?.onAfterAsk?.(loadingText ?? null);
+      };
+
+      // 完成输入的函数
+      const finishInput = () => {
+        if (isDone) return;
+
+        // 输出提示信息
+        console.log(chalk.dim('\n输入结束，正在处理...'));
+
+        // 标记为已完成，防止重复处理
+        isDone = true;
+
+        // 移除所有事件监听器
+        rl.removeAllListeners();
+
+        // 关闭 readline
+        try {
+          rl.close();
+        } catch {
+          // 忽略关闭错误
+        }
+
+        // 恢复 CLI 状态（在 resolve/reject 之前恢复，确保状态正确）
+        callbacks?.resumeCliInput?.();
+        callbacks?.onAfterAsk?.(loadingText ?? null);
+
+        // 返回提交信息
+        if (lines.length > 0) {
+          resolve(lines.join('\n'));
+        } else {
+          reject(new Error('提交信息不能为空'));
+        }
+      };
+
+      // 处理每一行输入
+      rl.on('line', (line) => {
+        // 检查是否为空行
+        if (line.trim() === '') {
+          emptyLineCount++;
+          // 连续两次空行，结束输入
+          if (emptyLineCount >= 2) {
+            finishInput();
+            return;
+          }
+          // 单次空行也添加到 lines 中（可能是多行提交信息中的空行）
+          lines.push(line);
+        } else {
+          // 非空行，重置空行计数
+          emptyLineCount = 0;
+          lines.push(line);
+        }
+      });
+
+      // 处理输入结束 (Ctrl+D) - 仍然保留作为备选方案
+      rl.on('close', () => {
+        if (isDone) return;
+        finishInput();
+      });
+
+      // 处理错误
+      rl.on('error', (err) => {
+        cleanup();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+
+      // 处理 Ctrl+C (用户取消)
+      rl.on('SIGINT', () => {
+        cleanup();
+        reject(new Error('用户取消输入'));
+      });
+    });
+  }
+
   async execute(params: Record<string, unknown>): Promise<string> {
     const {
-      message: paramMessage,
       files: paramFiles,
       all: paramAll,
       cwd,
     } = params as {
-      message?: string;
       files?: string[];
       all?: boolean;
       cwd?: string;
     };
 
-    let commitMessage = paramMessage;
-    let files = paramFiles;
-    let all = paramAll;
+    const files = paramFiles;
+    const all = paramAll;
 
-    if (!commitMessage || commitMessage.trim() === '') {
-      const { getPendingCommitMessage, clearPendingCommitMessage } =
-        await import('./commit-api-server.js');
-      const pending = getPendingCommitMessage();
-
-      if (pending) {
-        commitMessage = pending.message;
-        if (pending.files) {
-          files = pending.files;
-        }
-        if (pending.all !== undefined) {
-          all = pending.all;
-        }
-        clearPendingCommitMessage();
-      }
-    }
-
-    if (!commitMessage || commitMessage.trim() === '') {
+    // 强制向用户询问提交信息
+    let commitMessage: string;
+    try {
+      commitMessage = await this.askForCommitMessage();
+    } catch (error) {
       throw new Error(
-        'Commit message is required. Provide message parameter or set up IDE extension to send commit message via API.'
+        `获取提交信息失败: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
+    // 验证提交信息不为空
+    if (!commitMessage || commitMessage.trim() === '') {
+      throw new Error('提交信息不能为空');
+    }
+
     process.stdout.write('\r\x1b[K\n');
+    const displayMessage =
+      commitMessage.length > 50
+        ? commitMessage.substring(0, 50) + '...'
+        : commitMessage;
     console.log(
-      `  ${chalk.gray('💾 git commit:')} ${chalk.dim(commitMessage.substring(0, 50))}`
+      `  ${chalk.gray('💾 git commit:')} ${chalk.dim(displayMessage)}`
     );
 
     const result = await gitCommit({ message: commitMessage, files, all, cwd });
 
     if (result.success) {
-      return `Successfully committed: ${result.data?.hash}`;
+      if (result.data?.hash) {
+        return `Successfully committed: ${result.data.hash}`;
+      }
+      return 'Nothing to commit, working tree clean';
     }
 
     const errorMessage = result.error?.message || 'Unknown error';

@@ -268,7 +268,6 @@ export class ExecutionEngine {
             `[REFLECT] 决策: 重试工具: ${reflection.shouldRetryTools?.join(', ')}`
           );
           await this.checkAndGenerateSummary();
-          // 修复：移除 continue 语句，统一在循环末尾处理 phase 切换
           this.phase = 'ACT';
           this.terminationChecker.updateIteration();
           this.metrics.incrementIteration();
@@ -276,8 +275,20 @@ export class ExecutionEngine {
             'REFLECT',
             Date.now() - phaseStartTime
           );
-          // 注意：不在这里执行 executeAct，而是让循环自然进入下一个迭代
-          // 这样可以确保所有路径都执行 iteration++、metrics 记录、termination 判断
+          continue;
+        }
+
+        if (reflection.decision === 'continue') {
+          this.log('[REFLECT] 决策: 继续执行，进入重新规划');
+          await this.checkAndGenerateSummary();
+          this.phase = 'PLAN';
+          this.terminationChecker.updateIteration();
+          this.metrics.incrementIteration();
+          this.metrics.recordPhaseTiming(
+            'REFLECT',
+            Date.now() - phaseStartTime
+          );
+          continue;
         }
 
         await this.checkAndGenerateSummary();
@@ -638,6 +649,11 @@ export class ExecutionEngine {
     });
     this.log(`[ACT] 生成 ${waves.length} 个波次`);
 
+    // 创建工具信息映射，用于获取工具级别的超时时间
+    const toolInfoMap = new Map(
+      this.deps.tools.map((tool) => [tool.name, tool])
+    );
+
     const config = {
       toolTimeout: this.config.toolTimeout,
       maxConcurrentTools:
@@ -646,6 +662,7 @@ export class ExecutionEngine {
       waveTimeout:
         (this.config as unknown as { waveTimeout?: number }).waveTimeout ||
         60000,
+      toolInfoMap,
     };
 
     const waveResults = await executeAllWaves(

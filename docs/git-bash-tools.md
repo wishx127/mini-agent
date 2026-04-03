@@ -46,8 +46,7 @@ src/tools/plugins/
 │   ├── git-tool.ts        # Tool 类定义（@registerTool 装饰器）
 │   ├── git-tools.ts       # 业务逻辑实现
 │   ├── git-executor.ts    # Git 命令执行器
-│   ├── types.ts           # 类型定义
-│   └── commit-api-server.ts  # IDE API 服务
+│   └── types.ts           # 类型定义
 └── bash/
     ├── index.ts           # 入口导出
     ├── bash-tool.ts       # Tool 类定义
@@ -161,28 +160,6 @@ validateWorkingDirectory(cwd) → { valid: boolean, resolvedPath?: string }
 // Windows: taskkill /PID <pid> /T /F
 // Unix: kill -TERM -<pid> → kill -KILL -<pid>
 ```
-
-### 5. IDE 集成 (Commit API Server)
-
-`CommitApiServer` 提供本地 HTTP API 供 IDE 扩展调用：
-
-```
-IDE Extension                          Agent
-     │                                    │
-     │──── POST /commit ─────────────────►│
-     │     { message, files, all }        │
-     │                                    │
-     │◄──── 200 OK ──────────────────────│
-     │                                    │
-     │                          GitCommitTool
-     │                              │
-     │◄──── getPendingCommit() ──────│
-```
-
-| 端点      | 方法 | 说明                |
-| --------- | ---- | ------------------- |
-| `/commit` | POST | 提交 commit message |
-| `/health` | GET  | 健康检查            |
 
 ## 与其他模块的联动
 

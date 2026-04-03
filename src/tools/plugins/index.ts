@@ -44,10 +44,6 @@ export {
   GitLogTool,
   GitResetTool,
   GitCleanTool,
-  CommitApiServer,
-  commitApiServer,
-  getPendingCommitMessage,
-  clearPendingCommitMessage,
 } from './git/index.js';
 
 // 导出 Bash 执行工具

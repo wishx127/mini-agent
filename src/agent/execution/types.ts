@@ -394,6 +394,7 @@ export interface ToolInfo {
   recentSuccessRate?: number;
   lastUsedIteration?: number;
   failureCount?: number;
+  timeout?: number; // 工具级别的超时时间（毫秒）
 }
 
 export interface DeduplicationState {
